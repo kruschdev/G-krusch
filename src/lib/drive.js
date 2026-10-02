@@ -8,6 +8,25 @@ import { mutex } from './mutex.js';
 import { sanitizeWorkspacePath } from './path-utils.js';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB safety cap
+const MAX_WRITE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB write cap
+
+export function isBinaryMimeType(mimeType) {
+  if (!mimeType) return false;
+  if (mimeType.startsWith('image/')) return true;
+  if (mimeType.startsWith('audio/')) return true;
+  if (mimeType.startsWith('video/')) return true;
+  if ([
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/x-tar',
+    'application/gzip',
+    'application/octet-stream',
+    'application/x-executable'
+  ].includes(mimeType)) {
+    return true;
+  }
+  return false;
+}
 
 export async function getDrive() {
   const auth = await getAuthenticatedClient();
@@ -128,44 +147,67 @@ export async function resolvePathToId(relativePath, options = { createParents: f
 }
 
 /**
+ * Fetch all files inside a parent folder with pagination support.
+ */
+async function listFolderFiles(drive, parentId) {
+  const allFiles = [];
+  let pageToken = null;
+
+  do {
+    const res = await withRetry(() => drive.files.list({
+      q: `'${parentId}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, webViewLink, iconLink)',
+      orderBy: 'folder, name',
+      pageSize: 100,
+      pageToken: pageToken || undefined
+    }));
+
+    if (res.data.files) {
+      allFiles.push(...res.data.files);
+    }
+    pageToken = res.data.nextPageToken;
+  } while (pageToken);
+
+  return allFiles;
+}
+
+/**
+ * Recursively build folder hierarchy with depth limit.
+ */
+async function buildFolderTree(drive, parentId, depth = 0, maxDepth = 5) {
+  if (depth > maxDepth) return [];
+
+  const files = await listFolderFiles(drive, parentId);
+  const items = [];
+
+  for (const item of files) {
+    if (item.mimeType === 'application/vnd.google-apps.folder') {
+      const children = await buildFolderTree(drive, item.id, depth + 1, maxDepth);
+      items.push({
+        ...item,
+        children
+      });
+    } else {
+      items.push(item);
+    }
+  }
+
+  return items;
+}
+
+/**
  * List the full recursive tree of files in the workspace folder.
  */
 export async function listWorkspaceTree() {
   const rootId = await getOrCreateWorkspaceFolder();
   const drive = await getDrive();
-
-  const res = await withRetry(() => drive.files.list({
-    q: `'${rootId}' in parents and trashed = false`,
-    fields: 'files(id, name, mimeType, size, modifiedTime, webViewLink, iconLink)',
-    orderBy: 'folder, name',
-    pageSize: 100
-  }));
-
-  const files = res.data.files || [];
-  const tree = [];
-
-  for (const item of files) {
-    if (item.mimeType === 'application/vnd.google-apps.folder') {
-      const subRes = await withRetry(() => drive.files.list({
-        q: `'${item.id}' in parents and trashed = false`,
-        fields: 'files(id, name, mimeType, size, modifiedTime, webViewLink, iconLink)',
-        orderBy: 'name',
-        pageSize: 100
-      }));
-      tree.push({
-        ...item,
-        children: subRes.data.files || []
-      });
-    } else {
-      tree.push(item);
-    }
-  }
+  const tree = await buildFolderTree(drive, rootId);
 
   return { rootId, items: tree };
 }
 
 /**
- * Reads a document or file from Google Drive with size limits and format conversion.
+ * Reads a document or file from Google Drive with size limits, format conversion, and binary guards.
  */
 export async function readDriveFile(fileId) {
   if (!fileId) throw new Error('fileId is required to read file.');
@@ -178,9 +220,23 @@ export async function readDriveFile(fileId) {
 
   const meta = metaRes.data;
 
+  // Folder guard
+  if (meta.mimeType === 'application/vnd.google-apps.folder') {
+    throw new Error(`Cannot read content of folder "${meta.name}". Use list_drive_workspace to inspect folder contents.`);
+  }
+
   // Enforce size limit on large non-Google docs
   if (meta.size && parseInt(meta.size, 10) > MAX_FILE_SIZE_BYTES) {
     throw new Error(`File "${meta.name}" exceeds maximum allowed size limit of 10MB.`);
+  }
+
+  // Binary file guard
+  if (isBinaryMimeType(meta.mimeType)) {
+    return {
+      meta,
+      isBinary: true,
+      content: `[Binary File: ${meta.name} (${meta.mimeType}, ${meta.size || 0} bytes)]\nView in browser: ${meta.webViewLink || 'N/A'}`
+    };
   }
 
   let content = '';
@@ -197,6 +253,12 @@ export async function readDriveFile(fileId) {
       { responseType: 'text' }
     ));
     content = exportRes.data;
+  } else if (meta.mimeType === 'application/vnd.google-apps.presentation') {
+    const exportRes = await withRetry(() => drive.files.export(
+      { fileId, mimeType: 'text/plain' },
+      { responseType: 'text' }
+    ));
+    content = exportRes.data;
   } else {
     const getRes = await withRetry(() => drive.files.get(
       { fileId, alt: 'media' },
@@ -207,6 +269,7 @@ export async function readDriveFile(fileId) {
 
   return {
     meta,
+    isBinary: false,
     content: String(content || '')
   };
 }
@@ -217,6 +280,10 @@ export async function readDriveFile(fileId) {
  */
 export async function writeDriveFile({ path: relativePath, content, mimeType = 'text/markdown' }) {
   const cleanPath = sanitizeWorkspacePath(relativePath);
+
+  if (content && typeof content === 'string' && Buffer.byteLength(content, 'utf8') > MAX_WRITE_SIZE_BYTES) {
+    throw new Error(`Write content exceeds maximum allowed size limit of 10MB.`);
+  }
 
   return mutex.runExclusive(`write:${cleanPath}`, async () => {
     const drive = await getDrive();
@@ -273,6 +340,33 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
 }
 
 /**
+ * Safely trashes a file or folder inside the workspace.
+ */
+export async function deleteDriveFile({ fileId, path: relativePath }) {
+  let targetId = fileId;
+  if (!targetId && relativePath) {
+    targetId = await resolvePathToId(relativePath);
+  }
+  if (!targetId) {
+    throw new Error('Target file not found for deletion.');
+  }
+
+  const rootId = await getOrCreateWorkspaceFolder();
+  if (targetId === rootId) {
+    throw new Error('Deleting the workspace root folder is strictly prohibited.');
+  }
+
+  return mutex.runExclusive(`delete:${targetId}`, async () => {
+    const drive = await getDrive();
+    await withRetry(() => drive.files.update({
+      fileId: targetId,
+      requestBody: { trashed: true }
+    }));
+    return { status: 'trashed', fileId: targetId };
+  });
+}
+
+/**
  * Full-text search across the workspace folder.
  */
 export async function searchWorkspaceFiles(query, { maxResults = 10 } = {}) {
@@ -303,3 +397,4 @@ export async function getDriveOverview() {
     storage: about.data.storageQuota
   };
 }
+

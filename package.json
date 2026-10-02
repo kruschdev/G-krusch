@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node --test test/*.test.js",
+    "doctor": "node bin/doctor.js",
     "client": "npm --prefix client run dev"
   },
   "keywords": [

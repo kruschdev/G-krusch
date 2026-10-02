@@ -69,6 +69,12 @@ export function getDb() {
       chunk_index UNINDEXED,
       tokenize = 'porter unicode61'
     );
+
+    CREATE TABLE IF NOT EXISTS rag_embeddings_cache (
+      text_hash TEXT PRIMARY KEY,
+      embedding TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   dbInstance = db;
@@ -159,3 +165,27 @@ export function searchFtsChunks(query, limit = 10) {
     return [];
   }
 }
+
+export function getCachedEmbedding(textHash) {
+  const db = getDb();
+  const row = db.prepare('SELECT embedding FROM rag_embeddings_cache WHERE text_hash = ?').get(textHash);
+  if (row) {
+    try {
+      return JSON.parse(row.embedding);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function saveCachedEmbedding(textHash, embedding) {
+  const db = getDb();
+  const serialized = JSON.stringify(embedding);
+  db.prepare(`
+    INSERT INTO rag_embeddings_cache (text_hash, embedding, created_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(text_hash) DO NOTHING
+  `).run(textHash, serialized);
+}
+

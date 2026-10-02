@@ -1,13 +1,47 @@
 import { Router } from 'express';
 import { getAgentSteering, updateAgentSteering } from '../lib/steering.js';
-import { listWorkspaceTree, getDriveOverview, writeDriveFile } from '../lib/drive.js';
+import { listWorkspaceTree, getDriveOverview, writeDriveFile, deleteDriveFile } from '../lib/drive.js';
 import { syncDriveRag, searchDriveRag } from '../lib/rag.js';
-import { getDb } from '../lib/db.js';
+import { getDb, getMetadata } from '../lib/db.js';
+import { getAuthStatus } from '../lib/oauth.js';
 import { requireAuthIfConfigured } from '../lib/auth-guard.js';
 import { sanitizeWorkspacePath } from '../lib/path-utils.js';
 import config from '../config.js';
 
 const router = Router();
+
+// ── Health & Diagnostics ─────────────────────────────────────────
+
+router.get('/health', (req, res) => {
+  try {
+    const db = getDb();
+    const isDbOk = !!db.prepare('SELECT 1').get();
+    const authStatus = getAuthStatus();
+    const docCount = db.prepare('SELECT COUNT(*) as count FROM rag_documents').get()?.count || 0;
+    const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
+
+    res.json({
+      status: 'healthy',
+      version: '1.0.0',
+      uptimeSeconds: Math.round(process.uptime()),
+      db: isDbOk ? 'connected' : 'error',
+      auth: {
+        authenticated: authStatus.authenticated,
+        email: authStatus.email
+      },
+      workspace: {
+        folderName: config.google.workspaceFolderName,
+        cachedRootId: getMetadata('workspace_root_id')
+      },
+      rag: {
+        documentsIndexed: docCount,
+        totalChunks: chunkCount
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'unhealthy', error: err.message });
+  }
+});
 
 // ── Steering (agent.md) ──────────────────────────────────────────
 
@@ -52,6 +86,19 @@ router.post('/drive/write', requireAuthIfConfigured, async (req, res) => {
 
     const cleanPath = sanitizeWorkspacePath(rawPath);
     const result = await writeDriveFile({ path: cleanPath, content: content || '', mimeType });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/drive/file', requireAuthIfConfigured, async (req, res) => {
+  try {
+    const { fileId, path: rawPath } = req.body;
+    if (!fileId && !rawPath) {
+      return res.status(400).json({ error: 'Must provide fileId or path.' });
+    }
+    const result = await deleteDriveFile({ fileId, path: rawPath });
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -129,10 +176,13 @@ router.get('/mcp/info', (req, res) => {
       'search_drive_rag',
       'read_drive_file',
       'write_drive_file',
+      'delete_drive_file',
       'list_drive_workspace',
-      'sync_drive_rag'
+      'sync_drive_rag',
+      'get_workspace_status'
     ]
   });
 });
 
 export default router;
+

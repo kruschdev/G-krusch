@@ -1,41 +1,59 @@
 /**
- * Async Keyed Mutex
- * Ensures operations on the same logical resource (e.g. workspace folder provisioning,
- * agent.md updates, RAG indexing) are executed sequentially rather than overlapping.
+ * Strict FIFO Async Keyed Mutex with Timeout Guard
+ * Ensures sequential execution on keyed resources without race conditions or deadlocks.
  */
 
-class AsyncKeyedMutex {
-  constructor() {
+export class AsyncKeyedMutex {
+  constructor(defaultTimeoutMs = 60000) {
     /** @type {Map<string, Promise<void>>} */
-    this.locks = new Map();
+    this.chains = new Map();
+    this.defaultTimeoutMs = defaultTimeoutMs;
   }
 
   /**
-   * Acquire a lock for a given key, execute the async function, and release.
+   * Acquire a lock for a given key, execute the async function in strict FIFO order, and release.
    * @template T
    * @param {string} key
    * @param {() => Promise<T>} fn
+   * @param {{ timeoutMs?: number }} [options]
    * @returns {Promise<T>}
    */
-  async runExclusive(key, fn) {
-    while (this.locks.has(key)) {
-      await this.locks.get(key);
-    }
+  async runExclusive(key, fn, options = {}) {
+    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
+    const prev = this.chains.get(key) || Promise.resolve();
 
     let release;
-    const lockPromise = new Promise(resolve => {
+    const next = new Promise(resolve => {
       release = resolve;
     });
 
-    this.locks.set(key, lockPromise);
+    // Update chain synchronously to attach current task to the tail
+    const nextChain = prev.then(() => next, () => next);
+    this.chains.set(key, nextChain);
+
+    await prev;
+
+    let timeoutTimer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      if (timeoutMs > 0 && timeoutMs < Infinity) {
+        timeoutTimer = setTimeout(() => {
+          reject(new Error(`Mutex timeout after ${timeoutMs}ms for key "${key}"`));
+        }, timeoutMs);
+      }
+    });
 
     try {
-      return await fn();
+      return await Promise.race([fn(), timeoutPromise]);
     } finally {
-      this.locks.delete(key);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       release();
+      // Clean up map entry if this was the last item in the chain
+      if (this.chains.get(key) === nextChain) {
+        this.chains.delete(key);
+      }
     }
   }
 }
 
 export const mutex = new AsyncKeyedMutex();
+

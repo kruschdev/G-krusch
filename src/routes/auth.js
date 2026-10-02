@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { getAuthorizationUrl, handleOAuthCallback, getAuthStatus } from '../lib/oauth.js';
+import { getAuthorizationUrl, handleOAuthCallback, getAuthStatus, resetOAuthClientCache } from '../lib/oauth.js';
 import { deleteCredentials } from '../lib/db.js';
 
 const router = Router();
+
 
 // Initiate OAuth flow
 router.get('/google', (req, res) => {
@@ -98,7 +99,9 @@ router.get('/status', (req, res) => {
 // Disconnect
 router.post('/disconnect', (req, res) => {
   deleteCredentials('google_oauth');
+  resetOAuthClientCache();
   res.json({ success: true, message: 'Google Drive disconnected.' });
 });
 
 export default router;
+

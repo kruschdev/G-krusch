@@ -83,6 +83,12 @@ if (isStdio) {
       return res.status(429).json({ error: 'Max concurrent MCP SSE connections reached.' });
     }
 
+    // Set reverse proxy headers for streaming
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
     const transport = new SSEServerTransport('/mcp/messages', res);
     transports.set(transport.sessionId, { transport, res });
 
@@ -90,7 +96,12 @@ if (isStdio) {
       transports.delete(transport.sessionId);
     });
 
-    await mcpServer.connect(transport);
+    try {
+      await mcpServer.connect(transport);
+    } catch (err) {
+      console.warn('[MCP SSE Connect Error]:', err.message);
+      transports.delete(transport.sessionId);
+    }
   });
 
   app.post('/mcp/messages', async (req, res) => {
@@ -98,11 +109,19 @@ if (isStdio) {
     const entry = transports.get(sessionId);
 
     if (entry && entry.transport) {
-      await entry.transport.handlePostMessage(req, res);
+      try {
+        await entry.transport.handlePostMessage(req, res);
+      } catch (err) {
+        console.error('[MCP Transport Message Error]:', err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to process MCP message', details: err.message });
+        }
+      }
     } else {
       res.status(503).json({ error: 'SSE transport not found for session' });
     }
   });
+
 
   // Fallback route for SPA dashboard
   app.get('*', (req, res, next) => {

@@ -1,5 +1,6 @@
+import crypto from 'crypto';
 import config from '../config.js';
-import { getDb, searchFtsChunks } from './db.js';
+import { getDb, searchFtsChunks, getCachedEmbedding, saveCachedEmbedding } from './db.js';
 import { getDrive, getOrCreateWorkspaceFolder, readDriveFile } from './drive.js';
 import { mutex } from './mutex.js';
 import { withRetry } from './retry.js';
@@ -12,6 +13,7 @@ const SUPPORTED_MIME_PATTERNS = [
   'application/pdf',
   'application/vnd.google-apps.document',
   'application/vnd.google-apps.spreadsheet',
+  'application/vnd.google-apps.presentation',
   'application/javascript',
   'application/typescript',
   'application/xml'
@@ -75,10 +77,19 @@ export function chunkText(text, chunkSize = 800, overlap = 150) {
 }
 
 /**
- * Generate vector embedding for a string.
+ * Generate vector embedding for a string with SQLite caching.
  */
 export async function generateEmbedding(text) {
   const clean = text.replace(/\n+/g, ' ').slice(0, 2048);
+  const textHash = crypto.createHash('sha256').update(clean).digest('hex');
+
+  // Check persistent SQLite cache first
+  const cached = getCachedEmbedding(textHash);
+  if (cached && Array.isArray(cached) && cached.length > 0) {
+    return cached;
+  }
+
+  let embedding = null;
 
   // 1. Try Gemini text-embedding-004 if key is provided
   if (config.ai.geminiApiKey) {
@@ -104,7 +115,7 @@ export async function generateEmbedding(text) {
       if (res.ok) {
         const data = await res.json();
         if (data.embedding?.values) {
-          return data.embedding.values;
+          embedding = data.embedding.values;
         }
       }
     } catch (e) {
@@ -112,8 +123,8 @@ export async function generateEmbedding(text) {
     }
   }
 
-  // 2. Try Ollama if configured
-  if (config.ai.ollamaUrl) {
+  // 2. Try Ollama if configured and Gemini did not yield embedding
+  if (!embedding && config.ai.ollamaUrl) {
     try {
       const res = await fetch(config.ai.ollamaUrl, {
         method: 'POST',
@@ -126,13 +137,19 @@ export async function generateEmbedding(text) {
 
       if (res.ok) {
         const data = await res.json();
-        if (data.embedding) return data.embedding;
+        if (data.embedding) embedding = data.embedding;
       }
     } catch {}
   }
 
   // 3. Fallback: Deterministic 64-dimensional feature vector
-  return createDeterministicVector(clean, 64);
+  if (!embedding) {
+    embedding = createDeterministicVector(clean, 64);
+  }
+
+  // Cache generated embedding
+  saveCachedEmbedding(textHash, embedding);
+  return embedding;
 }
 
 function createDeterministicVector(str, dims = 64) {
@@ -166,50 +183,82 @@ export function cosineSimilarity(vecA, vecB) {
 }
 
 /**
+ * Recursively list all files in a folder with pagination.
+ */
+async function listAllFolderFiles(drive, parentId) {
+  const files = [];
+  let pageToken = null;
+
+  do {
+    const res = await withRetry(() => drive.files.list({
+      q: `'${parentId}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, webViewLink, size)',
+      pageSize: 100,
+      pageToken: pageToken || undefined
+    }));
+
+    if (res.data.files) {
+      files.push(...res.data.files);
+    }
+    pageToken = res.data.nextPageToken;
+  } while (pageToken);
+
+  return files;
+}
+
+/**
  * Synchronize Google Drive workspace files into local vector & FTS5 store.
- * Locked by mutex to avoid concurrent execution spikes.
+ * Fully recursive, paginated, and purges deleted/trashed files.
  */
 export async function syncDriveRag() {
   return mutex.runExclusive('sync_rag', async () => {
     const drive = await getDrive();
     const rootId = await getOrCreateWorkspaceFolder();
+    const seenFileIds = new Set();
 
-    const q = `'${rootId}' in parents and trashed = false`;
-    const listRes = await withRetry(() => drive.files.list({
-      q,
-      fields: 'files(id, name, mimeType, modifiedTime, webViewLink, size)',
-      pageSize: 100
-    }));
-
-    const files = listRes.data.files || [];
     let updatedCount = 0;
     let skippedCount = 0;
     let totalChunks = 0;
 
-    for (const file of files) {
-      if (file.mimeType === 'application/vnd.google-apps.folder') {
-        const subRes = await withRetry(() => drive.files.list({
-          q: `'${file.id}' in parents and trashed = false`,
-          fields: 'files(id, name, mimeType, modifiedTime, webViewLink, size)',
-          pageSize: 100
-        }));
-        for (const subFile of subRes.data.files || []) {
-          const res = await indexSingleFile(subFile, `${file.name}/${subFile.name}`);
+    async function walkAndIndex(parentId, currentPath, depth = 0) {
+      if (depth > 5) return;
+      const files = await listAllFolderFiles(drive, parentId);
+
+      for (const file of files) {
+        const itemPath = currentPath ? `${currentPath}/${file.name}` : file.name;
+        if (file.mimeType === 'application/vnd.google-apps.folder') {
+          await walkAndIndex(file.id, itemPath, depth + 1);
+        } else {
+          seenFileIds.add(file.id);
+          const res = await indexSingleFile(file, itemPath);
           if (res.updated) updatedCount++;
           else skippedCount++;
           totalChunks += res.chunks;
         }
-      } else {
-        const res = await indexSingleFile(file, file.name);
-        if (res.updated) updatedCount++;
-        else skippedCount++;
-        totalChunks += res.chunks;
+      }
+    }
+
+    await walkAndIndex(rootId, '');
+
+    // Purge stale/deleted documents from SQLite
+    const db = getDb();
+    const existingDocs = db.prepare('SELECT file_id FROM rag_documents').all();
+    let deletedCount = 0;
+    const deleteDocStmt = db.prepare('DELETE FROM rag_documents WHERE file_id = ?');
+    const deleteFtsStmt = db.prepare('DELETE FROM rag_chunks_fts WHERE file_id = ?');
+
+    for (const doc of existingDocs) {
+      if (!seenFileIds.has(doc.file_id)) {
+        deleteDocStmt.run(doc.file_id);
+        deleteFtsStmt.run(doc.file_id);
+        deletedCount++;
       }
     }
 
     return {
       updatedFiles: updatedCount,
       skippedFiles: skippedCount,
+      deletedFiles: deletedCount,
       totalChunks,
       syncedAt: new Date().toISOString()
     };
@@ -231,8 +280,8 @@ async function indexSingleFile(file, relativePath) {
   }
 
   try {
-    const { content } = await readDriveFile(file.id);
-    if (!content || !content.trim()) {
+    const { content, isBinary } = await readDriveFile(file.id);
+    if (isBinary || !content || !content.trim()) {
       return { updated: false, chunks: 0 };
     }
 
@@ -265,7 +314,7 @@ async function indexSingleFile(file, relativePath) {
       VALUES (?, ?, ?)
     `);
 
-    // Insert chunks with generated embeddings (rate throttled)
+    // Insert chunks with generated embeddings (uses SQLite cache)
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const emb = await generateEmbedding(chunk);
@@ -282,8 +331,9 @@ async function indexSingleFile(file, relativePath) {
 
 /**
  * True Hybrid Search: Combines Dense Vector Similarity + SQLite FTS5 BM25 Keyword Search.
+ * Ensures keyword matches always provide an additive boost.
  */
-export async function searchDriveRag(query, { limit = 5, minScore = 0.2 } = {}) {
+export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {}) {
   const db = getDb();
   const queryEmbedding = await generateEmbedding(query);
 
@@ -298,14 +348,19 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.2 } = {}) 
 
   for (const row of chunks) {
     if (!row.embedding) continue;
-    const emb = JSON.parse(row.embedding);
+    let emb;
+    try {
+      emb = JSON.parse(row.embedding);
+    } catch {
+      continue;
+    }
     const vScore = cosineSimilarity(queryEmbedding, emb);
     const key = `${row.file_id}:${row.chunk_index}`;
 
     chunkMap.set(key, {
       vectorScore: vScore,
       bm25Score: 0,
-      combinedScore: vScore,
+      combinedScore: 0,
       content: row.content,
       fileId: row.file_id,
       fileName: row.name,
@@ -316,7 +371,7 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.2 } = {}) 
   }
 
   // 2. FTS5 BM25 keyword matching
-  const ftsHits = searchFtsChunks(query, limit * 2);
+  const ftsHits = searchFtsChunks(query, limit * 3);
   for (const hit of ftsHits) {
     const key = `${hit.file_id}:${hit.chunk_index}`;
     // BM25 rank is negative in SQLite, lower is better. Normalize to 0-1 scale
@@ -325,9 +380,13 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.2 } = {}) 
     if (chunkMap.has(key)) {
       const item = chunkMap.get(key);
       item.bm25Score = normBm25;
-      // Weighted hybrid fusion: 70% vector + 30% BM25
-      item.combinedScore = (0.7 * item.vectorScore) + (0.3 * normBm25);
     }
+  }
+
+  // 3. Compute uniform additive hybrid fusion: 70% vector + 30% BM25 keyword
+  for (const item of chunkMap.values()) {
+    const finalScore = (0.7 * Math.max(0, item.vectorScore)) + (0.3 * item.bm25Score);
+    item.combinedScore = finalScore;
   }
 
   const results = Array.from(chunkMap.values())
@@ -348,3 +407,4 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.2 } = {}) 
 
   return results;
 }
+

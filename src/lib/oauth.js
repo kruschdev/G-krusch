@@ -1,6 +1,15 @@
 import { google } from 'googleapis';
 import config from '../config.js';
-import { saveCredentials, getCredentials } from './db.js';
+import { saveCredentials, getCredentials, deleteCredentials } from './db.js';
+import { mutex } from './mutex.js';
+
+let cachedClient = null;
+let cachedTokensHash = null;
+
+export function resetOAuthClientCache() {
+  cachedClient = null;
+  cachedTokensHash = null;
+}
 
 export function createOAuth2Client() {
   if (!config.google.clientId || !config.google.clientSecret) {
@@ -41,6 +50,7 @@ export async function handleOAuthCallback(code) {
   }
 
   saveCredentials('google_oauth', tokens, userEmail);
+  resetOAuthClientCache();
   return { tokens, email: userEmail };
 }
 
@@ -50,16 +60,55 @@ export async function getAuthenticatedClient() {
     throw new Error('Google Drive is not authenticated. Please authenticate via the web dashboard at /auth/google.');
   }
 
-  const client = createOAuth2Client();
-  client.setCredentials(creds.tokens);
+  // Token hash to detect database updates
+  const tokenJson = JSON.stringify(creds.tokens);
 
-  // Listen for automatic token refreshes and persist them
-  client.on('tokens', (newTokens) => {
-    const merged = { ...creds.tokens, ...newTokens };
-    saveCredentials('google_oauth', merged, creds.email);
+  if (cachedClient && cachedTokensHash === tokenJson) {
+    // Check if token expires within 60 seconds
+    const expiry = creds.tokens.expiry_date;
+    const isExpiringSoon = expiry && (expiry <= Date.now() + 60000);
+
+    if (!isExpiringSoon) {
+      return cachedClient;
+    }
+  }
+
+  return mutex.runExclusive('oauth_token_refresh', async () => {
+    // Re-check credentials inside lock in case another request refreshed them
+    const freshCreds = getCredentials('google_oauth');
+    if (!freshCreds || !freshCreds.tokens) {
+      throw new Error('Google Drive is not authenticated.');
+    }
+
+    const client = createOAuth2Client();
+    client.setCredentials(freshCreds.tokens);
+
+    // Bind token refresh listener
+    client.on('tokens', (newTokens) => {
+      const merged = { ...freshCreds.tokens, ...newTokens };
+      saveCredentials('google_oauth', merged, freshCreds.email);
+      cachedTokensHash = JSON.stringify(merged);
+    });
+
+    // Proactively refresh if expired or about to expire
+    const expiry = freshCreds.tokens.expiry_date;
+    if (freshCreds.tokens.refresh_token && expiry && (expiry <= Date.now() + 60000)) {
+      try {
+        const { credentials } = await client.refreshAccessToken();
+        const merged = { ...freshCreds.tokens, ...credentials };
+        saveCredentials('google_oauth', merged, freshCreds.email);
+        client.setCredentials(merged);
+        cachedTokensHash = JSON.stringify(merged);
+      } catch (refreshErr) {
+        console.warn('[OAuth] Proactive token refresh failed, continuing with current tokens:', refreshErr.message);
+      }
+    } else {
+      cachedTokensHash = JSON.stringify(freshCreds.tokens);
+    }
+
+    cachedClient = client;
+    return client;
   });
-
-  return client;
 }
 
 export function getAuthStatus() {
@@ -70,3 +119,4 @@ export function getAuthStatus() {
     updatedAt: creds?.updated_at || null
   };
 }
+
