@@ -6,6 +6,7 @@ import { getDb, getMetadata } from '../lib/db.js';
 import { getAuthStatus } from '../lib/oauth.js';
 import { requireAuthIfConfigured } from '../lib/auth-guard.js';
 import { sanitizeWorkspacePath } from '../lib/path-utils.js';
+import { getNexusConfig, getPdftotextPath } from '../lib/pdf.js';
 import config from '../config.js';
 
 const router = Router();
@@ -19,6 +20,8 @@ router.get('/health', (req, res) => {
     const authStatus = getAuthStatus();
     const docCount = db.prepare('SELECT COUNT(*) as count FROM rag_documents').get()?.count || 0;
     const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
+    const nexus = getNexusConfig();
+    const pdftotext = getPdftotextPath();
 
     res.json({
       status: 'healthy',
@@ -28,6 +31,10 @@ router.get('/health', (req, res) => {
       auth: {
         authenticated: authStatus.authenticated,
         email: authStatus.email
+      },
+      pdf: {
+        engine: nexus.isAvailable ? 'nexus' : (pdftotext ? 'pdftotext' : 'none'),
+        nexusPath: nexus.nexusDir
       },
       workspace: {
         folderName: config.google.workspaceFolderName,
@@ -94,7 +101,8 @@ router.post('/drive/write', requireAuthIfConfigured, async (req, res) => {
 
 router.delete('/drive/file', requireAuthIfConfigured, async (req, res) => {
   try {
-    const { fileId, path: rawPath } = req.body;
+    const fileId = req.body?.fileId || req.query?.fileId;
+    const rawPath = req.body?.path || req.query?.path;
     if (!fileId && !rawPath) {
       return res.status(400).json({ error: 'Must provide fileId or path.' });
     }

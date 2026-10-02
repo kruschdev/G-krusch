@@ -6,6 +6,7 @@ import { getMetadata, setMetadata } from './db.js';
 import { withRetry } from './retry.js';
 import { mutex } from './mutex.js';
 import { sanitizeWorkspacePath } from './path-utils.js';
+import { parsePdfBuffer } from './pdf.js';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB safety cap
 const MAX_WRITE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB write cap
@@ -239,7 +240,24 @@ export async function readDriveFile(fileId) {
     };
   }
 
+  if (meta.mimeType === 'application/pdf') {
+    const getRes = await withRetry(() => drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'arraybuffer' }
+    ));
+    const buffer = Buffer.from(getRes.data);
+    const parsed = await parsePdfBuffer(buffer, meta.name);
+    return {
+      meta,
+      isBinary: false,
+      content: parsed.text,
+      chunks: parsed.chunks,
+      pdfEngine: parsed.engine
+    };
+  }
+
   let content = '';
+  let chunks = null;
 
   if (meta.mimeType === 'application/vnd.google-apps.document') {
     const exportRes = await withRetry(() => drive.files.export(
@@ -270,7 +288,8 @@ export async function readDriveFile(fileId) {
   return {
     meta,
     isBinary: false,
-    content: String(content || '')
+    content: String(content || ''),
+    chunks
   };
 }
 

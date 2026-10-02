@@ -12,7 +12,9 @@ import config from '../src/config.js';
 import { getDb } from '../src/lib/db.js';
 import { encrypt, decrypt } from '../src/lib/crypto.js';
 import { getAuthStatus } from '../src/lib/oauth.js';
+import { getNexusConfig, getPdftotextPath } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
 import { registerMcpTools } from '../src/mcp/tools.js';
 
 const PASS = '[\x1b[32mPASS\x1b[0m]';
@@ -134,7 +136,20 @@ if (config.ai.geminiApiKey) {
   console.log(`${INFO} Gemini API Key not set. Checking Ollama at ${config.ai.ollamaUrl}...`);
 }
 
-// 7. MCP Tools Registration
+// 7. PDF Parsing Engine (Krusch-Nexus + Poppler)
+const nexus = getNexusConfig();
+const pdftotext = getPdftotextPath();
+
+if (nexus.isAvailable) {
+  console.log(`${PASS} PDF Parser Engine: Krusch-Nexus Active (${nexus.nexusDir})`);
+} else if (pdftotext) {
+  console.log(`${PASS} PDF Parser Engine: Poppler pdftotext fallback active (${pdftotext})`);
+} else {
+  console.log(`${WARN} PDF Parser Engine: Neither Nexus nor pdftotext detected. PDF ingestion will be degraded.`);
+  warnings++;
+}
+
+// 8. MCP Tools Registration
 try {
   const server = new McpServer({ name: 'doctor-check', version: '1.0.0' });
   registerMcpTools(server);
@@ -145,6 +160,7 @@ try {
 }
 
 console.log('\n------------------------------------------------------');
+
 if (issues === 0) {
   console.log(`\x1b[32m✨ All critical systems operational! (${warnings} warnings)\x1b[0m\n`);
   process.exit(0);

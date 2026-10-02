@@ -31,6 +31,10 @@
           <span class="status-dot"></span>
           <span id="drive-status-text">Checking Drive...</span>
         </div>
+        <div id="pdf-engine-badge" class="status-badge online" title="PDF Citation Spine">
+          <span class="status-dot"></span>
+          <span id="pdf-engine-text">Nexus PDF Active</span>
+        </div>
         <div class="status-badge online">
           <span class="status-dot pulse"></span>
           <span>MCP SSE :5446</span>
@@ -238,7 +242,7 @@
         </div>
 
         <div class="tools-inventory-section glass">
-          <h3>Exposed Agent Tools (6 Tools)</h3>
+          <h3>Exposed Agent Tools (8 Tools)</h3>
           <div class="tools-grid">
             <div class="tool-item">
               <div class="tool-name"><code>get_agent_steering</code></div>
@@ -246,23 +250,31 @@
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>search_drive_rag</code></div>
-              <div class="tool-desc">Semantic vector &amp; keyword retrieval across all documents, Google Docs, and notes in Drive.</div>
+              <div class="tool-desc">Hybrid vector &amp; BM25 retrieval with page-accurate PDF citation grounding across all workspace files.</div>
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>read_drive_file</code></div>
-              <div class="tool-desc">Reads any file in Google Drive, automatically exporting Google Docs cleanly into markdown text.</div>
+              <div class="tool-desc">Reads any file in Google Drive, automatically parsing PDFs via Krusch-Nexus and exporting Docs/Slides.</div>
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>write_drive_file</code></div>
-              <div class="tool-desc">Creates or updates documents in Google Drive, allowing agents to persist reports and deliverables.</div>
+              <div class="tool-desc">Creates or updates documents in Google Drive, allowing agents to persist deliverables with 10MB safety caps.</div>
+            </div>
+            <div class="tool-item">
+              <div class="tool-name"><code>delete_drive_file</code></div>
+              <div class="tool-desc">Safely deletes or trashes files and directories within the workspace hierarchy by relative path or file ID.</div>
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>list_drive_workspace</code></div>
-              <div class="tool-desc">Recursively inspects the workspace hierarchy, subdirectories, and files in Drive.</div>
+              <div class="tool-desc">Recursively inspects the workspace hierarchy, subdirectories, and files in Drive up to depth 5.</div>
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>sync_drive_rag</code></div>
-              <div class="tool-desc">Triggers an incremental scan and embedding sync of Google Drive documents into the vector store.</div>
+              <div class="tool-desc">Triggers an incremental scan and embedding sync of Google Drive documents into SQLite vector store.</div>
+            </div>
+            <div class="tool-item">
+              <div class="tool-name"><code>get_workspace_status</code></div>
+              <div class="tool-desc">Returns real-time health, drive auth state, folder layout, storage quota, and active PDF parser engine.</div>
             </div>
           </div>
         </div>

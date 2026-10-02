@@ -280,12 +280,16 @@ async function indexSingleFile(file, relativePath) {
   }
 
   try {
-    const { content, isBinary } = await readDriveFile(file.id);
+    const { content, isBinary, chunks: parsedChunks } = await readDriveFile(file.id);
     if (isBinary || !content || !content.trim()) {
       return { updated: false, chunks: 0 };
     }
 
-    const chunks = chunkText(content);
+    // Preserve page-faithful citations and chunks from Nexus/Poppler when available
+    const chunks = (Array.isArray(parsedChunks) && parsedChunks.length > 0)
+      ? parsedChunks.map(c => (c.citation ? `[${c.citation}]\n${c.text}` : c.text))
+      : chunkText(content);
+
 
     // Save document record
     db.prepare(`

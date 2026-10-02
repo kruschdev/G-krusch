@@ -42,6 +42,8 @@ async function setupAuth() {
   const text = document.getElementById('drive-status-text');
   const authBtn = document.getElementById('auth-action-btn');
   const authLabel = document.getElementById('auth-btn-label');
+  const pdfBadge = document.getElementById('pdf-engine-badge');
+  const pdfText = document.getElementById('pdf-engine-text');
 
   try {
     const res = await fetch('/auth/status');
@@ -68,6 +70,24 @@ async function setupAuth() {
     badge.className = 'status-badge disconnected';
     text.textContent = 'Auth Check Failed';
   }
+
+  // Probe PDF Engine Health & Status
+  try {
+    const hRes = await fetch('/api/health');
+    const hData = await hRes.json();
+    if (pdfBadge && pdfText && hData.pdf) {
+      if (hData.pdf.engine === 'nexus') {
+        pdfBadge.className = 'status-badge online';
+        pdfText.textContent = 'Nexus PDF Active';
+      } else if (hData.pdf.engine === 'pdftotext') {
+        pdfBadge.className = 'status-badge online';
+        pdfText.textContent = 'Poppler PDF Active';
+      } else {
+        pdfBadge.className = 'status-badge disconnected';
+        pdfText.textContent = 'PDF Engine Offline';
+      }
+    }
+  } catch {}
 }
 
 // ── Load All Data ─────────────────────────────────────────────────
@@ -148,6 +168,59 @@ async function saveSteering() {
 
 // ── Workspace Files Explorer ──────────────────────────────────────
 
+function getFileIconAndBadge(mimeType, name) {
+  if (mimeType === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
+    return { icon: '📕', badge: '<span class="brand-badge" style="margin-left:0.4rem;font-size:0.65rem;background:rgba(239,68,68,0.15);color:#fca5a5;border-color:rgba(239,68,68,0.3);">PDF (Nexus)</span>' };
+  }
+  if (mimeType === 'application/vnd.google-apps.presentation') {
+    return { icon: '📊', badge: '<span class="brand-badge" style="margin-left:0.4rem;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#fcd34d;border-color:rgba(245,158,11,0.3);">Slides</span>' };
+  }
+  if (mimeType === 'application/vnd.google-apps.document') {
+    return { icon: '📄', badge: '<span class="brand-badge" style="margin-left:0.4rem;font-size:0.65rem;">Doc</span>' };
+  }
+  if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+    return { icon: '📈', badge: '<span class="brand-badge" style="margin-left:0.4rem;font-size:0.65rem;">Sheets</span>' };
+  }
+  return { icon: '📝', badge: '' };
+}
+
+function renderTreeItem(item) {
+  if (item.mimeType === 'application/vnd.google-apps.folder') {
+    const children = item.children || [];
+    return `
+      <div class="tree-node">
+        <div class="tree-node-title">
+          <span class="tree-folder-icon">📁</span>
+          <strong>${escapeHtml(item.name)}/</strong>
+          <div class="tree-actions">
+            <span class="file-meta-link">${children.length} item(s)</span>
+            <button class="tree-delete-btn" data-id="${item.id}" data-name="${escapeHtml(item.name)}" title="Delete Folder">✕</button>
+          </div>
+        </div>
+        <div class="tree-node-children">
+          ${children.map(c => renderTreeItem(c)).join('')}
+          ${children.length === 0 ? '<div style="color:var(--text-muted);font-size:0.8rem;padding:0.25rem 0;">(empty folder)</div>' : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  const { icon, badge } = getFileIconAndBadge(item.mimeType, item.name);
+  return `
+    <div class="tree-node">
+      <div class="tree-node-title">
+        <span class="tree-file-icon">${icon}</span>
+        <span>${escapeHtml(item.name)}</span>
+        ${badge}
+        <div class="tree-actions">
+          ${item.webViewLink ? `<a href="${item.webViewLink}" target="_blank" class="file-meta-link">Open in Drive ↗</a>` : ''}
+          <button class="tree-delete-btn" data-id="${item.id}" data-name="${escapeHtml(item.name)}" title="Delete File">✕</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 async function loadWorkspaceTree() {
   const container = document.getElementById('workspace-tree');
 
@@ -166,47 +239,45 @@ async function loadWorkspaceTree() {
       return;
     }
 
-    let html = '';
-    for (const item of items) {
-      if (item.mimeType === 'application/vnd.google-apps.folder') {
-        const children = item.children || [];
-        html += `
-          <div class="tree-node">
-            <div class="tree-node-title">
-              <span class="tree-folder-icon">📁</span>
-              <strong>${escapeHtml(item.name)}/</strong>
-              <span class="file-meta-link">${children.length} item(s)</span>
-            </div>
-            <div class="tree-node-children">
-              ${children.map(c => `
-                <div class="tree-node-title">
-                  <span class="tree-file-icon">📄</span>
-                  <span>${escapeHtml(c.name)}</span>
-                  ${c.webViewLink ? `<a href="${c.webViewLink}" target="_blank" class="file-meta-link">Open in Drive ↗</a>` : ''}
-                </div>
-              `).join('')}
-              ${children.length === 0 ? '<div style="color:var(--text-muted);font-size:0.8rem;padding:0.25rem 0;">(empty folder)</div>' : ''}
-            </div>
-          </div>
-        `;
-      } else {
-        html += `
-          <div class="tree-node">
-            <div class="tree-node-title">
-              <span class="tree-file-icon">📄</span>
-              <span>${escapeHtml(item.name)}</span>
-              ${item.webViewLink ? `<a href="${item.webViewLink}" target="_blank" class="file-meta-link">Open in Drive ↗</a>` : ''}
-            </div>
-          </div>
-        `;
-      }
-    }
+    container.innerHTML = items.map(item => renderTreeItem(item)).join('');
 
-    container.innerHTML = html;
+    // Wire delete button actions
+    container.querySelectorAll('.tree-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const fileId = btn.getAttribute('data-id');
+        const name = btn.getAttribute('data-name');
+        if (!confirm(`Permanently delete "${name}" from Google Drive?`)) return;
+
+        btn.disabled = true;
+        btn.textContent = '...';
+        try {
+          const delRes = await fetch('/api/drive/file', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileId })
+          });
+          const delData = await delRes.json();
+          if (delData.error) {
+            alert(`Delete failed: ${delData.error}`);
+            btn.disabled = false;
+            btn.textContent = '✕';
+          } else {
+            loadWorkspaceTree();
+            loadRagStats();
+          }
+        } catch (err) {
+          alert(`Delete error: ${err.message}`);
+          btn.disabled = false;
+          btn.textContent = '✕';
+        }
+      });
+    });
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>Error loading files: ${err.message}</p></div>`;
   }
 }
+
 
 // ── RAG Search & Indexing ────────────────────────────────────────
 

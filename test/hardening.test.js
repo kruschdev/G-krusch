@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import { AsyncKeyedMutex } from '../src/lib/mutex.js';
 import { sanitizeWorkspacePath, isValidFileName, isForbiddenSegment } from '../src/lib/path-utils.js';
 import { isBinaryMimeType } from '../src/lib/drive.js';
 import { generateEmbedding, cosineSimilarity } from '../src/lib/rag.js';
 import { getDb, getCachedEmbedding, saveCachedEmbedding } from '../src/lib/db.js';
 import { invalidateSteeringCache } from '../src/lib/steering.js';
+import { parsePdfFile, parsePdfBuffer } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
 
@@ -149,3 +152,22 @@ test('Hardening: MCP server exposes 8 comprehensive tools', () => {
   }
   assert.equal(registeredToolNames.length, 8, 'Must have exactly 8 registered MCP tools');
 });
+
+test('Hardening: PDF Parsing Engine parses PDF with page citations and headers', async () => {
+  const fixturePath = '/home/krusch/homelab/projects/krusch-nexus/tests/fixtures/sample_contract.pdf';
+  if (!fs.existsSync(fixturePath)) {
+    return;
+  }
+  const fileResult = await parsePdfFile(fixturePath, 'sample_contract.pdf');
+  assert.ok(['nexus', 'pdftotext'].includes(fileResult.engine), 'Must use valid PDF engine');
+  assert.ok(fileResult.chunks.length > 0, 'Must extract at least one chunk');
+  assert.ok(fileResult.chunks[0].citation.includes('sample_contract.pdf p.1'), 'Chunk must contain page citation');
+  assert.ok(fileResult.text.includes('COMMERCIAL LEASE AGREEMENT'), 'Text must contain content');
+
+  const buf = await fsp.readFile(fixturePath);
+  const bufResult = await parsePdfBuffer(buf, 'sample_contract.pdf');
+  assert.equal(bufResult.engine, fileResult.engine);
+  assert.ok(bufResult.chunks.length > 0);
+  assert.ok(bufResult.chunks[0].citation.includes('sample_contract.pdf p.1'));
+});
+

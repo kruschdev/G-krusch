@@ -422,7 +422,6 @@ body {
 }
 
 .file-meta-link {
-  margin-left: auto;
   font-size: 0.75rem;
   color: var(--text-muted);
   text-decoration: none;
@@ -432,6 +431,36 @@ body {
   color: var(--accent-sky);
   text-decoration: underline;
 }
+
+.tree-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.tree-delete-btn {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.45rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tree-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+}
+
+.rag-score-breakdown {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 
 /* ── RAG Playground ────────────────────────────────────── */
 
