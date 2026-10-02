@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { getAgentSteering, updateAgentSteering } from '../lib/steering.js';
-import { listWorkspaceTree, getDriveOverview } from '../lib/drive.js';
+import { listWorkspaceTree, getDriveOverview, writeDriveFile } from '../lib/drive.js';
 import { syncDriveRag, searchDriveRag } from '../lib/rag.js';
 import { getDb } from '../lib/db.js';
+import { requireAuthIfConfigured } from '../lib/auth-guard.js';
+import { sanitizeWorkspacePath } from '../lib/path-utils.js';
 import config from '../config.js';
 
 const router = Router();
@@ -19,7 +21,7 @@ router.get('/steering', async (req, res) => {
   }
 });
 
-router.put('/steering', async (req, res) => {
+router.put('/steering', requireAuthIfConfigured, async (req, res) => {
   try {
     const { content } = req.body;
     if (typeof content !== 'string') {
@@ -43,14 +45,16 @@ router.get('/workspace/tree', async (req, res) => {
   }
 });
 
-router.post('/drive/write', async (req, res) => {
+router.post('/drive/write', requireAuthIfConfigured, async (req, res) => {
   try {
-    const { path, content, mimeType } = req.body;
-    if (!path) return res.status(400).json({ error: 'Path is required.' });
-    const result = await writeDriveFile({ path, content: content || '', mimeType });
+    const { path: rawPath, content, mimeType } = req.body;
+    if (!rawPath) return res.status(400).json({ error: 'Path is required.' });
+
+    const cleanPath = sanitizeWorkspacePath(rawPath);
+    const result = await writeDriveFile({ path: cleanPath, content: content || '', mimeType });
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -65,7 +69,7 @@ router.get('/drive/overview', async (req, res) => {
 
 // ── RAG Indexing & Search ───────────────────────────────────────
 
-router.post('/rag/sync', async (req, res) => {
+router.post('/rag/sync', requireAuthIfConfigured, async (req, res) => {
   try {
     const syncResult = await syncDriveRag();
     res.json(syncResult);
@@ -76,13 +80,13 @@ router.post('/rag/sync', async (req, res) => {
 
 router.get('/rag/search', async (req, res) => {
   try {
-    const query = req.query.q || '';
-    if (!query.trim()) {
+    const rawQuery = String(req.query.q || '').slice(0, 300);
+    if (!rawQuery.trim()) {
       return res.status(400).json({ error: 'Query parameter q is required.' });
     }
-    const limit = parseInt(req.query.limit || '5', 10);
-    const results = await searchDriveRag(query, { limit });
-    res.json({ query, results });
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit || '5', 10)), 25);
+    const results = await searchDriveRag(rawQuery, { limit });
+    res.json({ query: rawQuery, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -127,23 +131,7 @@ router.get('/mcp/info', (req, res) => {
       'write_drive_file',
       'list_drive_workspace',
       'sync_drive_rag'
-    ],
-    sampleConfigs: {
-      antigravity: {
-        mcpServers: {
-          "g-krusch": {
-            url: sseUrl
-          }
-        }
-      },
-      cursor: {
-        mcpServers: {
-          "g-krusch": {
-            url: sseUrl
-          }
-        }
-      }
-    }
+    ]
   });
 });
 

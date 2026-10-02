@@ -4,7 +4,8 @@
  * Master Orchestrator:
  * - Express REST API & Web Dashboard
  * - Model Context Protocol (MCP) Server (SSE + Stdio)
- * - Google Drive Dynamic agent.md Steering & Vector RAG Engine
+ * - Google Drive Dynamic agent.md Steering & Hybrid Vector RAG Engine
+ * - Keepalive Heartbeats & Process Guardians
  */
 
 import express from 'express';
@@ -44,7 +45,7 @@ if (isStdio) {
 
   const app = express();
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '2mb' }));
 
   // Mount API & Auth routes
   app.use('/auth', authRoutes);
@@ -56,14 +57,34 @@ if (isStdio) {
   app.use(express.static(clientDist));
   app.use(express.static(clientPublic));
 
-  // ── MCP SSE Transport ─────────────────────────────────────────
+  // ── MCP SSE Transport with Heartbeat Guard ─────────────────────
 
-  /** @type {Map<string, SSEServerTransport>} */
+  /** @type {Map<string, { transport: SSEServerTransport, res: express.Response }>} */
   const transports = new Map();
+  const MAX_CONCURRENT_TRANSPORTS = 50;
+
+  // 15-second heartbeat ping to prevent proxy/firewall disconnects
+  const heartbeatTimer = setInterval(() => {
+    for (const [id, entry] of transports) {
+      try {
+        if (!entry.res.writableEnded) {
+          entry.res.write(':keepalive\n\n');
+        } else {
+          transports.delete(id);
+        }
+      } catch {
+        transports.delete(id);
+      }
+    }
+  }, 15000);
 
   app.get('/mcp/sse', async (req, res) => {
+    if (transports.size >= MAX_CONCURRENT_TRANSPORTS) {
+      return res.status(429).json({ error: 'Max concurrent MCP SSE connections reached.' });
+    }
+
     const transport = new SSEServerTransport('/mcp/messages', res);
-    transports.set(transport.sessionId, transport);
+    transports.set(transport.sessionId, { transport, res });
 
     res.on('close', () => {
       transports.delete(transport.sessionId);
@@ -74,10 +95,10 @@ if (isStdio) {
 
   app.post('/mcp/messages', async (req, res) => {
     const sessionId = req.query.sessionId;
-    const transport = transports.get(sessionId);
+    const entry = transports.get(sessionId);
 
-    if (transport) {
-      await transport.handlePostMessage(req, res);
+    if (entry && entry.transport) {
+      await entry.transport.handlePostMessage(req, res);
     } else {
       res.status(503).json({ error: 'SSE transport not found for session' });
     }
@@ -99,16 +120,20 @@ if (isStdio) {
     console.log(`🚀 G-Krusch (G-Crush) Hub running at: http://localhost:${config.port}`);
     console.log(`📡 MCP SSE Transport active at: http://localhost:${config.port}/mcp/sse`);
     console.log(`🔐 Google OAuth Endpoint: http://localhost:${config.port}/auth/google`);
+    console.log(`🛡️ Process hardening & SSE keepalives initialized`);
     console.log(`======================================================\n`);
   });
 
   // Graceful shutdown
   const gracefulShutdown = (signal) => {
     console.log(`\n[G-Krusch] Received ${signal}, closing server...`);
-    for (const [id, transport] of transports) {
-      try { transport.close?.(); } catch {}
+    clearInterval(heartbeatTimer);
+
+    for (const [id, entry] of transports) {
+      try { entry.transport.close?.(); } catch {}
       transports.delete(id);
     }
+
     server.close(() => {
       console.log('[G-Krusch] Server closed cleanly.');
       process.exit(0);
@@ -117,4 +142,13 @@ if (isStdio) {
 
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  // Global uncaught handlers to prevent silent process crashes
+  process.on('unhandledRejection', (reason) => {
+    console.error('[G-Krusch Guardian] Unhandled Promise Rejection:', reason);
+  });
+
+  process.on('uncaughtException', (err) => {
+    console.error('[G-Krusch Guardian] Uncaught Exception:', err);
+  });
 }

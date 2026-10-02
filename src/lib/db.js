@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import config from '../config.js';
+import { encrypt, decrypt } from './crypto.js';
 
 let dbInstance = null;
 
@@ -60,6 +61,14 @@ export function getDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_rag_chunks_file_id ON rag_chunks(file_id);
+
+    -- FTS5 Full-Text Search Table for fast BM25 keyword matching
+    CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+      content,
+      file_id UNINDEXED,
+      chunk_index UNINDEXED,
+      tokenize = 'porter unicode61'
+    );
   `);
 
   dbInstance = db;
@@ -68,6 +77,9 @@ export function getDb() {
 
 export function saveCredentials(id, tokens, email = null) {
   const db = getDb();
+  const serialized = JSON.stringify(tokens);
+  const encrypted = encrypt(serialized);
+
   const stmt = db.prepare(`
     INSERT INTO credentials (id, tokens, email, updated_at)
     VALUES (?, ?, ?, datetime('now'))
@@ -76,17 +88,24 @@ export function saveCredentials(id, tokens, email = null) {
       email = coalesce(excluded.email, credentials.email),
       updated_at = datetime('now')
   `);
-  stmt.run(id, JSON.stringify(tokens), email);
+  stmt.run(id, encrypted, email);
 }
 
 export function getCredentials(id = 'google_oauth') {
   const db = getDb();
   const row = db.prepare('SELECT * FROM credentials WHERE id = ?').get(id);
   if (!row) return null;
-  return {
-    ...row,
-    tokens: JSON.parse(row.tokens)
-  };
+
+  try {
+    const decrypted = decrypt(row.tokens);
+    return {
+      ...row,
+      tokens: JSON.parse(decrypted)
+    };
+  } catch (err) {
+    console.error('[DB] Failed to decrypt credentials:', err.message);
+    return null;
+  }
 }
 
 export function deleteCredentials(id = 'google_oauth') {
@@ -110,4 +129,33 @@ export function getMetadata(key) {
   const db = getDb();
   const row = db.prepare('SELECT value FROM workspace_metadata WHERE key = ?').get(key);
   return row ? row.value : null;
+}
+
+/**
+ * Searches FTS5 index using BM25 ranking.
+ */
+export function searchFtsChunks(query, limit = 10) {
+  const db = getDb();
+  // Sanitize query for FTS5 (strip special syntax characters)
+  const cleanQuery = query.replace(/[^\w\s]/g, ' ').trim();
+  if (!cleanQuery) return [];
+
+  // Match words with OR or phrase
+  const terms = cleanQuery.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return [];
+  const ftsQuery = terms.map(t => `"${t}"`).join(' OR ');
+
+  try {
+    const stmt = db.prepare(`
+      SELECT rowid, file_id, chunk_index, content, bm25(rag_chunks_fts) as rank
+      FROM rag_chunks_fts
+      WHERE rag_chunks_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `);
+    return stmt.all(ftsQuery, limit);
+  } catch (e) {
+    console.warn('[FTS] Search error:', e.message);
+    return [];
+  }
 }
