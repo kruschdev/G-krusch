@@ -1,6 +1,8 @@
 node_modules/
 data/
+.agent/
 .env
 .DS_Store
 dist/
 *.log
+
