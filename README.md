@@ -98,18 +98,37 @@ Add to your `mcp_config.json`:
 
 ---
 
-## 🧰 Exposed MCP Tools
+## 🧰 Exposed MCP Tools (8 Tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_agent_steering` | Retrieves active `agent.md` steering directives directly from Google Drive. |
-| `search_drive_rag` | Semantic vector and keyword search across all indexed files in Google Drive. |
-| `read_drive_file` | Reads any document from Drive (exports Google Docs cleanly to markdown). |
+| `search_drive_rag` | Hybrid semantic vector + FTS5 BM25 keyword search across all indexed files in Google Drive. |
+| `read_drive_file` | Reads any document from Drive (exports Google Docs & PDFs cleanly to Markdown). |
 | `write_drive_file` | Writes or updates a file in the workspace (saves reports, notes, artifacts). |
+| `delete_drive_file` | Soft-trashes a file in the G-Krusch Google Drive workspace. |
 | `list_drive_workspace`| Lists all folders and files in the G-Krusch Drive hierarchy. |
 | `sync_drive_rag` | Triggers an incremental scan and embedding sync of Google Drive files. |
+| `get_workspace_status` | Reports OAuth connection health, indexed file count, and cached embedding statistics. |
+
+---
+
+## ☁️ Google Workspace Extension REST APIs (Krusch Companion Bridge)
+
+In addition to its MCP server, G-Krusch exposes REST Extension APIs on port `5446` consumed by [`krusch-companion`](https://github.com/kruschdev/krusch-companion)'s `<holodata>` Dual-Engine Agentic Proxy:
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/rag/search?q=...` | Hybrid semantic + FTS5 BM25 search across indexed Google Drive documents (`gkrusch_drive`). |
+| `GET` | `/api/drive/read?path=...` | Reads a Google Drive file or exports a Google Doc to Markdown (`gkrusch_drive`). |
+| `POST` | `/api/drive/write` | Creates or updates a Markdown document inside the `G-Krusch` Drive workspace (`gkrusch_drive`). |
+| `GET` | `/api/calendar/events` | Lists upcoming events from the user's primary Google Calendar (`gkrusch_calendar`). |
+| `POST` | `/api/calendar/events` | Schedules a new Google Calendar event (`{ summary, startTime, endTime, description }`) (`gkrusch_calendar`). |
+| `GET` | `/api/gmail/messages?q=...` | Searches Gmail messages and returns sender, subject, date, and snippet previews (`gkrusch_gmail`). |
+| `POST` | `/api/gmail/drafts` | Encodes an RFC-2822 MIME message and creates a Gmail draft or sends immediately (`gkrusch_gmail`). |
 
 ---
 
 ## 📄 License
 MIT License. Created by [kruschdev](https://github.com/kruschdev).
+
