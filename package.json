@@ -1,7 +1,7 @@
 {
   "name": "g-krusch",
   "version": "1.0.0",
-  "description": "G-Krusch (G-Crush) — Google Drive for AI Agents & Agentic Workspaces. Cloud-synced agent.md steering, full-text & vector RAG, and two-way agentic filesystem.",
+  "description": "Sovereign Google Workspace Hub & MCP Server for AI Agents — Cloud-synced agent.md steering, hybrid Vector + FTS5 BM25 Drive RAG, page-faithful PDF parsing, and Google Docs, Calendar & Gmail extensions.",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
@@ -12,12 +12,19 @@
     "client": "npm --prefix client run dev"
   },
   "keywords": [
-    "google-drive",
-    "ai-agents",
-    "agentic-systems",
     "mcp",
-    "rag",
-    "model-context-protocol"
+    "model-context-protocol",
+    "mcp-server",
+    "google-workspace",
+    "google-drive",
+    "google-calendar",
+    "gmail-api",
+    "hybrid-rag",
+    "ai-agents",
+    "agentic-workflows",
+    "sqlite-fts5",
+    "local-first",
+    "sovereign-ai"
   ],
   "author": "krusch",
   "license": "MIT",
