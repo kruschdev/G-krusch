@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getAgentSteering, updateAgentSteering } from '../lib/steering.js';
-import { listWorkspaceTree, getDriveOverview, writeDriveFile, deleteDriveFile } from '../lib/drive.js';
+import { listWorkspaceTree, getDriveOverview, readDriveFile, resolvePathToId, writeDriveFile, deleteDriveFile } from '../lib/drive.js';
+import { listCalendarEvents, createCalendarEvent, searchGmailMessages, createOrSendGmail } from '../lib/extensions.js';
 import { syncDriveRag, searchDriveRag } from '../lib/rag.js';
 import { getDb, getMetadata } from '../lib/db.js';
 import { getAuthStatus } from '../lib/oauth.js';
@@ -43,7 +44,8 @@ router.get('/health', (req, res) => {
       rag: {
         documentsIndexed: docCount,
         totalChunks: chunkCount
-      }
+      },
+      extensions: ['drive', 'docs', 'calendar', 'gmail']
     });
   } catch (err) {
     res.status(500).json({ status: 'unhealthy', error: err.message });
@@ -86,6 +88,32 @@ router.get('/workspace/tree', async (req, res) => {
   }
 });
 
+router.get('/drive/read', async (req, res) => {
+  try {
+    let targetId = req.query.fileId;
+    const rawPath = req.query.path;
+    if (!targetId && rawPath) {
+      targetId = await resolvePathToId(String(rawPath));
+      if (!targetId) {
+        return res.status(404).json({ error: `File not found in workspace at path: "${rawPath}"` });
+      }
+    }
+    if (!targetId) {
+      return res.status(400).json({ error: 'Must provide fileId or path query parameter.' });
+    }
+    const data = await readDriveFile(targetId);
+    res.json({
+      id: data.meta.id,
+      name: data.meta.name,
+      mimeType: data.meta.mimeType,
+      webViewLink: data.meta.webViewLink,
+      content: data.content
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/drive/write', requireAuthIfConfigured, async (req, res) => {
   try {
     const { path: rawPath, content, mimeType } = req.body;
@@ -119,6 +147,51 @@ router.get('/drive/overview', async (req, res) => {
     res.json(overview);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Google Calendar & Gmail Extension Endpoints ─────────────────
+
+router.get('/calendar/events', async (req, res) => {
+  try {
+    const maxResults = parseInt(req.query.limit || '10', 10);
+    const timeMin = req.query.timeMin || null;
+    const query = req.query.q || '';
+    const events = await listCalendarEvents({ maxResults, timeMin, query });
+    res.json({ events });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/calendar/events', requireAuthIfConfigured, async (req, res) => {
+  try {
+    const { summary, startTime, endTime, description, location } = req.body || {};
+    const event = await createCalendarEvent({ summary, startTime, endTime, description, location });
+    res.json({ event });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/gmail/messages', async (req, res) => {
+  try {
+    const query = req.query.q || 'is:inbox';
+    const maxResults = parseInt(req.query.limit || '5', 10);
+    const messages = await searchGmailMessages({ query, maxResults });
+    res.json({ messages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/gmail/drafts', requireAuthIfConfigured, async (req, res) => {
+  try {
+    const { to, subject, body, sendImmediately = false } = req.body || {};
+    const result = await createOrSendGmail({ to, subject, body, sendImmediately });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -171,7 +244,7 @@ router.get('/mcp/info', (req, res) => {
   res.json({
     name: 'g-krusch',
     version: '1.0.0',
-    description: 'Google Drive for AI Agents & Agentic Systems',
+    description: 'Google Drive, Calendar & Gmail Extension Hub for AI Agents',
     transports: {
       sse: sseUrl,
       stdio: {

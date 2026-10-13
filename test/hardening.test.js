@@ -11,6 +11,8 @@ import { invalidateSteeringCache } from '../src/lib/steering.js';
 import { parsePdfFile, parsePdfBuffer } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
+import { encodeRawEmail } from '../src/lib/extensions.js';
+import { config } from '../src/config.js';
 
 test('Hardening: FIFO Keyed Mutex executes 5 concurrent requests in exact arrival sequence', async () => {
   const m = new AsyncKeyedMutex();
@@ -170,4 +172,20 @@ test('Hardening: PDF Parsing Engine parses PDF with page citations and headers',
   assert.ok(bufResult.chunks.length > 0);
   assert.ok(bufResult.chunks[0].citation.includes('sample_contract.pdf p.1'));
 });
+
+test('Hardening: Google Workspace Extensions (Drive, Calendar, Gmail) OAuth scopes and RFC-2822 MIME encoder', () => {
+  assert.ok(config.google.scopes.some(s => s.includes('calendar.events')), 'Must include Google Calendar events scope');
+  assert.ok(config.google.scopes.some(s => s.includes('gmail.compose')), 'Must include Gmail compose scope');
+
+  const encoded = encodeRawEmail({
+    to: 'team@krusch.dev',
+    subject: 'Sovereign Brief',
+    body: 'All systems nominal.'
+  });
+  const decoded = Buffer.from(encoded, 'base64url').toString('utf-8');
+  assert.ok(decoded.includes('To: team@krusch.dev'));
+  assert.ok(decoded.includes('Subject: Sovereign Brief'));
+  assert.ok(decoded.includes('All systems nominal.'));
+});
+
 
