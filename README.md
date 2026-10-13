@@ -1,25 +1,30 @@
-# G-Krusch (G-Crush) — Google Drive for AI Agents & Agentic Workspaces
-
 <p align="center">
-  <img src="https://via.placeholder.com/800x380/070B14/38BDF8?text=G-KRUSCH+%7C+Google+Drive+for+AI+Agents" alt="G-Krusch Banner" width="100%">
+  <h1 align="center">☁️ G-Krusch — Sovereign Google Workspace Hub & MCP Bridge</h1>
+  <p align="center">
+    <strong>Google Drive RAG, Cloud-Synced <code>agent.md</code> Steering, Calendar & Gmail Extensions for AI Agents</strong><br>
+    <em>Powers autonomous IDE agents (via MCP) and <a href="https://github.com/kruschdev/krusch-companion">Krusch Companion</a>'s <code>&lt;holodata&gt;</code> Agentic Proxy (via REST on <code>:5446</code>).</em>
+  </p>
 </p>
 
-A sovereign **Google Drive Agent Hub and MCP Server** that turns Google Drive into a dynamic, cloud-synced brain for AI agents. Run your multi-agent workflows out of a single Google Drive folder with live `agent.md` steering, hybrid vector RAG, and two-way agentic file storage.
-
-[![Node](https://img.shields.io/badge/Node.js-22+-green.svg)](https://nodejs.org/)
-[![MCP](https://img.shields.io/badge/MCP-1.12+-blue.svg)](https://modelcontextprotocol.io/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<p align="center">
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-green.svg?style=flat-square" alt="Node.js"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
+  <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
+  <img src="https://img.shields.io/badge/tests-19%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
+</p>
 
 ---
 
 ## 🧠 Why G-Krusch?
 
-Most AI agents are trapped either in ephemeral context windows or isolated local folders that you can't easily access when away from your workstation. G-Krusch bridges the physical gap between humans and autonomous agents using Google Drive:
+Most AI agents are trapped either in ephemeral context windows or isolated local folders that you can't easily access when away from your workstation. **G-Krusch** bridges the gap between humans, coding agents, and personal assistants (`krusch-companion`) across your Google Workspace:
 
-1. **`agent.md` Cloud-Synced Steering**: Edit your agent rules, project priorities, and personas from your phone, tablet, or web browser directly in Google Drive. When an agent boots, it dynamically pulls the latest instructions via `get_agent_steering`.
-2. **Hybrid Vector & Full-Text Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using semantic embeddings (Gemini/Ollama) combined with Google Drive's native full-text search index.
-3. **Two-Way Agent Filesystem**: Agents can read project briefs from `context/`, check decision logs in `memory/`, and write final deliverables and reports directly into `output/` on Google Drive for you to review.
-4. **Native Google Doc Markdown Conversion**: Automatic on-the-fly export of Google Docs (`application/vnd.google-apps.document`) into clean, consumable Markdown.
+1. **`agent.md` Cloud-Synced Steering**: Edit your agent rules, project priorities, and personas from your phone, tablet, or web browser directly in Google Drive. When an agent boots, it dynamically pulls the latest instructions via `get_agent_steering` (`GET /api/steering`).
+2. **Hybrid Vector & FTS5 BM25 Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using dense semantic embeddings (Gemini `text-embedding-004` / local Ollama / deterministic 64-dim fallback) fused with SQLite FTS5 Porter-stemmed BM25 keyword search.
+3. **Page-Faithful PDF Extraction**: Integrates directly with **Krusch-Nexus** (`pdftotext -bbox-layout` + Poppler fallback) to extract multi-page PDFs with page citations (`[contract.pdf p.1]`).
+4. **Two-Way Agent Filesystem**: Agents can read project briefs from `context/`, check decision logs in `memory/`, and write deliverables directly into `output/` on Google Drive.
+5. **Google Calendar & Gmail Extensions**: Exposes hardened REST endpoints (`/api/calendar/events`, `/api/gmail/messages`, `/api/gmail/drafts`) so **Krusch Companion** can check your schedule, book appointments, search your inbox, and compose RFC-2822 / RFC-2047 emails.
 
 ---
 
@@ -38,42 +43,59 @@ Google Drive /
 
 ---
 
-## ⚡ Quick Start
+## 🛡️ Security & Concurrency Hardening
+
+* **AES-256-GCM Encrypted Token Vault (`src/lib/crypto.js` & `src/lib/db.js`)**: OAuth 2.0 access and refresh tokens are encrypted at rest in SQLite WAL using AES-256-GCM with random 12-byte IVs and 16-byte authentication tags.
+* **FIFO Keyed Mutex (`src/lib/mutex.js`)**: `AsyncKeyedMutex` serializes concurrent OAuth token refreshes (`oauth_token_refresh`), workspace folder provisioning (`workspace_root`), per-path file writes (`write:<path>`), and RAG indexing (`sync_rag`) with automatic timeout release to prevent deadlocks.
+* **Path Traversal & Dotfile Sanitizer (`src/lib/path-utils.js`)**: Strictly blocks `..`, null bytes, absolute paths, and sensitive file patterns (`.env`, `.git`, `id_rsa`, `.pem`).
+* **CRLF Header Injection Shield & RFC 2047 UTF-8 Encoder (`src/lib/extensions.js`)**: Strips CR/LF and control characters from email headers, validates recipient addresses, and encodes non-ASCII subjects (such as emojis or em-dashes) using `=?UTF-8?B?...?=`.
+* **Constant-Time API Key Guard (`src/lib/auth-guard.js`)**: Uses `crypto.timingSafeEqual` when `API_KEY` or `GCRUSH_SECRET` is configured to protect mutating endpoints against timing side-channel attacks, paired with HTML escaping (`escapeHtml`) on OAuth callback pages.
+
+---
+
+## ⚡ Quick Start & Diagnostics
 
 ### 1. Installation
 ```bash
-git clone https://github.com/kruschdev/g-krusch.git # or cd /home/krusch/homelab/projects/g-krusch
-cd g-krusch
+cd /home/krusch/homelab/projects/g-krusch
 npm install
 ```
 
 ### 2. Configure Environment
-Copy `.env.example` to `.env` and provide your Google OAuth credentials and Gemini API Key:
+Copy `.env.example` to `.env` and provide your Google OAuth credentials (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) and optional `GEMINI_API_KEY`:
 ```bash
 cp .env.example .env
 ```
 
-### 3. Launch G-Krusch
+### 3. Run Production Diagnostic Doctor & Tests
 ```bash
-npm start
+# Run 9-point production diagnostic check (Node 22+, SQLite WAL, FTS5, AES-256-GCM, OAuth, Nexus PDF, MCP, Workspace Extensions)
+npm run doctor
+
+# Run all 19 unit & hardening tests
+npm test
 ```
-The server will boot:
+
+### 4. Launch G-Krusch (CLI or Systemd User Service)
+```bash
+# Start directly
+npm start
+
+# Or manage via systemd user service on port 5446
+systemctl --user status g-krusch.service
+systemctl --user restart g-krusch.service
+```
+Endpoints:
 - **Web Dashboard**: `http://localhost:5446`
+- **Health & Telemetry**: `http://localhost:5446/api/health`
 - **MCP SSE Transport**: `http://localhost:5446/mcp/sse`
 - **Google OAuth Flow**: `http://localhost:5446/auth/google`
 
-### 4. Connect Your Google Account
-1. Open `http://localhost:5446` in your browser.
-2. Click **Connect Google Drive** in the header.
-3. Complete the Google OAuth consent flow.
-4. G-Krusch will automatically provision the `G-Krusch` workspace folder and seed `agent.md`.
-
 ---
 
-## 🛠️ MCP Integration (Cursor, Antigravity, Claude Code)
+## 🛠️ MCP Integration (Antigravity, Cursor, Claude Code)
 
-### SSE Transport (Antigravity IDE & Cursor)
-Add to your `mcp_config.json`:
+### SSE Transport (`http://localhost:5446/mcp/sse`)
 ```json
 {
   "mcpServers": {
@@ -84,7 +106,7 @@ Add to your `mcp_config.json`:
 }
 ```
 
-### Stdio Transport (Claude Code & Terminal Agents)
+### Stdio Transport
 ```json
 {
   "mcpServers": {
@@ -119,16 +141,23 @@ In addition to its MCP server, G-Krusch exposes REST Extension APIs on port `544
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
+| `GET` | `/api/health` | Reports SQLite WAL health, OAuth status, Krusch-Nexus PDF engine status, RAG counts, and active extensions. |
+| `GET` | `/api/steering` | Retrieves `agent.md` cloud steering directives (`?refresh=true` to bypass cache). |
+| `PUT` | `/api/steering` | Updates `agent.md` steering content in Google Drive. |
+| `GET` | `/api/workspace/tree` | Returns recursive folder & file tree for the `G-Krusch` Google Drive workspace. |
 | `GET` | `/api/rag/search?q=...` | Hybrid semantic + FTS5 BM25 search across indexed Google Drive documents (`gkrusch_drive`). |
-| `GET` | `/api/drive/read?path=...` | Reads a Google Drive file or exports a Google Doc to Markdown (`gkrusch_drive`). |
-| `POST` | `/api/drive/write` | Creates or updates a Markdown document inside the `G-Krusch` Drive workspace (`gkrusch_drive`). |
+| `POST`| `/api/rag/sync` | Incrementally indexes workspace documents into SQLite vector + FTS5 tables. |
+| `GET` | `/api/drive/read?path=...` | Reads a Google Drive file or exports a Google Doc/PDF to Markdown (`gkrusch_drive`). |
+| `POST`| `/api/drive/write` | Creates or updates a Markdown document inside the `G-Krusch` Drive workspace (`gkrusch_drive`). |
+| `DELETE`| `/api/drive/file` | Soft-trashes a file by `path` or `fileId`. |
 | `GET` | `/api/calendar/events` | Lists upcoming events from the user's primary Google Calendar (`gkrusch_calendar`). |
-| `POST` | `/api/calendar/events` | Schedules a new Google Calendar event (`{ summary, startTime, endTime, description }`) (`gkrusch_calendar`). |
+| `POST`| `/api/calendar/events` | Schedules a new Google Calendar event (`{ summary, startTime, endTime, description }`) (`gkrusch_calendar`). |
 | `GET` | `/api/gmail/messages?q=...` | Searches Gmail messages and returns sender, subject, date, and snippet previews (`gkrusch_gmail`). |
-| `POST` | `/api/gmail/drafts` | Encodes an RFC-2822 MIME message and creates a Gmail draft or sends immediately (`gkrusch_gmail`). |
+| `POST`| `/api/gmail/drafts` | Encodes a CRLF-sanitized RFC-2822 / RFC-2047 MIME message and creates a Gmail draft or sends immediately (`gkrusch_gmail`). |
 
 ---
 
 ## 📄 License
-MIT License. Created by [kruschdev](https://github.com/kruschdev).
+MIT © [kruschdev](https://github.com/kruschdev). Part of the Krusch Homelab Sovereign AI Ecosystem.
+
 

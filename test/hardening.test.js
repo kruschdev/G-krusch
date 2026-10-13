@@ -11,7 +11,9 @@ import { invalidateSteeringCache } from '../src/lib/steering.js';
 import { parsePdfFile, parsePdfBuffer } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
-import { encodeRawEmail } from '../src/lib/extensions.js';
+import { encodeRawEmail, validateEmailAddress, encodeMimeSubject, createCalendarEvent } from '../src/lib/extensions.js';
+import { isTimingSafeMatch } from '../src/lib/auth-guard.js';
+import { escapeHtml } from '../src/routes/auth.js';
 import { config } from '../src/config.js';
 
 test('Hardening: FIFO Keyed Mutex executes 5 concurrent requests in exact arrival sequence', async () => {
@@ -173,7 +175,7 @@ test('Hardening: PDF Parsing Engine parses PDF with page citations and headers',
   assert.ok(bufResult.chunks[0].citation.includes('sample_contract.pdf p.1'));
 });
 
-test('Hardening: Google Workspace Extensions (Drive, Calendar, Gmail) OAuth scopes and RFC-2822 MIME encoder', () => {
+test('Hardening: Google Workspace Extensions (Drive, Calendar, Gmail) OAuth scopes and RFC-2822 MIME encoder', async () => {
   assert.ok(config.google.scopes.some(s => s.includes('calendar.events')), 'Must include Google Calendar events scope');
   assert.ok(config.google.scopes.some(s => s.includes('gmail.compose')), 'Must include Gmail compose scope');
 
@@ -186,6 +188,49 @@ test('Hardening: Google Workspace Extensions (Drive, Calendar, Gmail) OAuth scop
   assert.ok(decoded.includes('To: team@krusch.dev'));
   assert.ok(decoded.includes('Subject: Sovereign Brief'));
   assert.ok(decoded.includes('All systems nominal.'));
+
+  // CRLF Header Injection prevention
+  const crlfAttempt = encodeRawEmail({
+    to: 'Krusch Team <team@krusch.dev>',
+    subject: 'Urgent\r\nBcc: attacker@evil.com\r\nX-Injected: true',
+    body: 'Hello'
+  });
+  const decodedCrlf = Buffer.from(crlfAttempt, 'base64url').toString('utf-8');
+  assert.ok(!decodedCrlf.includes('\r\nBcc:'), 'Must strip CRLF injection from Subject header');
+  assert.ok(!decodedCrlf.includes('\r\nX-Injected:'), 'Must strip injected headers');
+
+  // RFC 2047 UTF-8 Subject encoding for emojis & non-ASCII
+  const utf8Subj = encodeMimeSubject('Architecture Sync 📅 — Q4');
+  assert.ok(utf8Subj.startsWith('=?UTF-8?B?'), 'Non-ASCII subjects must use RFC 2047 Base64 encoding');
+
+  // Invalid recipient email rejection
+  assert.throws(() => validateEmailAddress('not-an-email'), /Invalid recipient email/);
+  assert.throws(() => validateEmailAddress(''), /required/);
+
+  // Calendar validation before OAuth call
+  await assert.rejects(
+    () => createCalendarEvent({ summary: 'Sync', startTime: 'not-a-date' }),
+    /Invalid startTime/
+  );
+  await assert.rejects(
+    () => createCalendarEvent({
+      summary: 'Sync',
+      startTime: '2026-10-14T15:00:00Z',
+      endTime: '2026-10-14T14:00:00Z'
+    }),
+    /endTime must be later than startTime/
+  );
 });
+
+test('Hardening: Timing-safe API key comparison and OAuth HTML escaping', () => {
+  assert.equal(isTimingSafeMatch('secret-key-123', 'secret-key-123'), true);
+  assert.equal(isTimingSafeMatch('secret-key-123', 'secret-key-124'), false);
+  assert.equal(isTimingSafeMatch('short', 'longer-secret'), false);
+  assert.equal(isTimingSafeMatch('', 'secret'), false);
+
+  const escaped = escapeHtml('<script>alert("xss")</script>');
+  assert.equal(escaped, '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+});
+
 
 

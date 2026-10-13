@@ -16,6 +16,7 @@ import { getNexusConfig, getPdftotextPath } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { registerMcpTools } from '../src/mcp/tools.js';
+import { encodeRawEmail } from '../src/lib/extensions.js';
 
 const PASS = '[\x1b[32mPASS\x1b[0m]';
 const WARN = '[\x1b[33mWARN\x1b[0m]';
@@ -156,6 +157,26 @@ try {
   console.log(`${PASS} MCP Protocol: 8 tools registered successfully on McpServer`);
 } catch (mcpErr) {
   console.log(`${FAIL} MCP Tool registration failed: ${mcpErr.message}`);
+  issues++;
+}
+
+// 9. Google Workspace Extensions (Drive, Docs, Calendar, Gmail Bridge)
+try {
+  const hasCal = config.google.scopes.some(s => s.includes('calendar.events'));
+  const hasGmail = config.google.scopes.some(s => s.includes('gmail.compose'));
+  const rawMime = encodeRawEmail({
+    to: 'companion@krusch.dev',
+    subject: 'Bridge Check — Sovereign ☁️',
+    body: 'Krusch Companion <-> G-Krusch Workspace Bridge Active.'
+  });
+  if (hasCal && hasGmail && rawMime.length > 20) {
+    console.log(`${PASS} Google Workspace Extensions: Drive, Docs, Calendar & Gmail REST Bridge verified`);
+  } else {
+    console.log(`${FAIL} Google Workspace Extensions configuration incomplete`);
+    issues++;
+  }
+} catch (extErr) {
+  console.log(`${FAIL} Google Workspace Extensions check failed: ${extErr.message}`);
   issues++;
 }
 

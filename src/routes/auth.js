@@ -1,9 +1,18 @@
 import { Router } from 'express';
 import { getAuthorizationUrl, handleOAuthCallback, getAuthStatus, resetOAuthClientCache } from '../lib/oauth.js';
 import { deleteCredentials } from '../lib/db.js';
+import { requireAuthIfConfigured } from '../lib/auth-guard.js';
 
 const router = Router();
 
+export function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 // Initiate OAuth flow
 router.get('/google', (req, res) => {
@@ -11,7 +20,7 @@ router.get('/google', (req, res) => {
     const authUrl = getAuthorizationUrl();
     res.redirect(authUrl);
   } catch (err) {
-    res.status(500).send(`<h3>OAuth Configuration Error</h3><p>${err.message}</p>`);
+    res.status(500).send(`<h3>OAuth Configuration Error</h3><p>${escapeHtml(err.message)}</p>`);
   }
 });
 
@@ -23,12 +32,13 @@ router.get('/google/callback', async (req, res) => {
   }
 
   try {
-    const result = await handleOAuthCallback(code);
+    const result = await handleOAuthCallback(String(code));
+    const safeEmail = escapeHtml(result.email);
     res.send(`
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Google Drive Connected — G-Krusch</title>
+          <title>Google Workspace Connected — G-Krusch</title>
           <style>
             body {
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -68,9 +78,9 @@ router.get('/google/callback', async (req, res) => {
         </head>
         <body>
           <div class="card">
-            <h1>🚀 Google Drive Connected!</h1>
-            <p>Account <strong>${result.email}</strong> is now securely authenticated with G-Krusch.</p>
-            <p>Your agent workspace folder, <code>agent.md</code> steering, and RAG vector store are now active.</p>
+            <h1>🚀 Google Workspace Connected!</h1>
+            <p>Account <strong>${safeEmail}</strong> is now securely authenticated with G-Krusch.</p>
+            <p>Your Google Drive workspace folder, <code>agent.md</code> steering, RAG vector store, Calendar, and Gmail extensions are now active.</p>
             <a href="/" class="btn">Return to Dashboard</a>
           </div>
           <script>
@@ -87,7 +97,7 @@ router.get('/google/callback', async (req, res) => {
     `);
   } catch (err) {
     console.error('[OAuth Callback Error]:', err);
-    res.status(500).send(`<h3>Authentication Failed</h3><p>${err.message}</p>`);
+    res.status(500).send(`<h3>Authentication Failed</h3><p>${escapeHtml(err.message)}</p>`);
   }
 });
 
@@ -97,11 +107,12 @@ router.get('/status', (req, res) => {
 });
 
 // Disconnect
-router.post('/disconnect', (req, res) => {
+router.post('/disconnect', requireAuthIfConfigured, (req, res) => {
   deleteCredentials('google_oauth');
   resetOAuthClientCache();
-  res.json({ success: true, message: 'Google Drive disconnected.' });
+  res.json({ success: true, message: 'Google Workspace disconnected.' });
 });
 
 export default router;
+
 

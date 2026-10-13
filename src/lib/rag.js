@@ -387,10 +387,12 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {})
     }
   }
 
-  // 3. Compute uniform additive hybrid fusion: 70% vector + 30% BM25 keyword
+  // 3. Compute uniform additive hybrid fusion: 70% vector + 30% BM25 keyword,
+  // with a BM25 floor so exact FTS5 keyword hits are never dropped if embeddings are offline or mixed-dimension.
   for (const item of chunkMap.values()) {
-    const finalScore = (0.7 * Math.max(0, item.vectorScore)) + (0.3 * item.bm25Score);
-    item.combinedScore = finalScore;
+    const weightedScore = (0.7 * Math.max(0, item.vectorScore)) + (0.3 * item.bm25Score);
+    const bm25Floor = item.bm25Score > 0 ? Math.max(minScore, item.bm25Score * 0.65) : 0;
+    item.combinedScore = Math.max(weightedScore, bm25Floor);
   }
 
   const results = Array.from(chunkMap.values())
