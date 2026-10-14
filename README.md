@@ -120,7 +120,7 @@ Endpoints:
 
 ---
 
-## 🧰 Exposed MCP Tools (8 Tools)
+## 🧰 Exposed MCP Tools (12 Tools)
 
 | Tool | Description |
 |------|-------------|
@@ -132,6 +132,10 @@ Endpoints:
 | `list_drive_workspace`| Lists all folders and files in the G-Krusch Drive hierarchy. |
 | `sync_drive_rag` | Triggers an incremental scan and embedding sync of Google Drive files. |
 | `get_workspace_status` | Reports OAuth connection health, indexed file count, and cached embedding statistics. |
+| `list_calendar_events` | Lists upcoming events from the user's primary Google Calendar with optional query and time window. |
+| `create_calendar_event` | Schedules a new event or reservation hold on the user's primary Google Calendar. |
+| `search_gmail_messages` | Searches Gmail messages using standard Gmail operators (`is:unread`, `from:...`). |
+| `compose_gmail_message` | Creates an RFC-2822 / RFC-2047 sanitized Gmail draft or sends an email immediately (`send_immediately: true`). |
 
 ---
 
@@ -153,7 +157,8 @@ In addition to its MCP server, G-Krusch exposes REST Extension APIs on port `544
 | `GET` | `/api/calendar/events` | Lists upcoming events from the user's primary Google Calendar (`gkrusch_calendar`). |
 | `POST`| `/api/calendar/events` | Schedules a new Google Calendar event (`{ summary, startTime, endTime, description }`) (`gkrusch_calendar`). |
 | `GET` | `/api/gmail/messages?q=...` | Searches Gmail messages and returns sender, subject, date, and snippet previews (`gkrusch_gmail`). |
-| `POST`| `/api/gmail/drafts` | Encodes a CRLF-sanitized RFC-2822 / RFC-2047 MIME message and creates a Gmail draft or sends immediately (`gkrusch_gmail`). |
+| `POST`| `/api/gmail/drafts` | Encodes a CRLF-sanitized RFC-2822 / RFC-2047 MIME message and creates a Gmail draft (`sendImmediately: false`) or sends immediately (`gkrusch_gmail` / `concierge_reservation`). |
+| `POST`| `/api/gmail/send` | Sends a CRLF-sanitized RFC-2822 / RFC-2047 MIME email immediately via Gmail (`sendImmediately: true`). |
 
 ---
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getAgentSteering } from '../lib/steering.js';
 import { searchDriveRag, syncDriveRag } from '../lib/rag.js';
 import { readDriveFile, writeDriveFile, deleteDriveFile, listWorkspaceTree, resolvePathToId, getDriveOverview } from '../lib/drive.js';
+import { listCalendarEvents, createCalendarEvent, searchGmailMessages, createOrSendGmail } from '../lib/extensions.js';
 import { getAuthStatus } from '../lib/oauth.js';
 import { getDb } from '../lib/db.js';
 import config from '../config.js';
@@ -270,6 +271,119 @@ export function registerMcpTools(mcpServer) {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `Error fetching workspace status: ${err.message}` }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // 9. List Google Calendar Events
+  mcpServer.tool(
+    'list_calendar_events',
+    'List upcoming events from the user\'s primary Google Calendar.',
+    {
+      max_results: z.number().int().min(1).max(25).default(10).describe('Maximum number of upcoming events to return'),
+      time_min: z.string().optional().describe('Optional ISO-8601 lower bound timestamp (defaults to now)'),
+      query: z.string().optional().describe('Optional free-text search filter for event titles or descriptions')
+    },
+    async ({ max_results, time_min, query }) => {
+      try {
+        const events = await listCalendarEvents({
+          maxResults: max_results,
+          timeMin: time_min || null,
+          query: query || ''
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ events }, null, 2) }]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Error listing Google Calendar events: ${err.message}` }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // 10. Create Google Calendar Event
+  mcpServer.tool(
+    'create_calendar_event',
+    'Schedule a new event or reservation hold on the user\'s primary Google Calendar.',
+    {
+      summary: z.string().describe('Title of the calendar event'),
+      start_time: z.string().describe('ISO-8601 start timestamp (e.g. "2026-10-18T19:30:00-07:00")'),
+      end_time: z.string().optional().describe('Optional ISO-8601 end timestamp (defaults to +1 hour)'),
+      description: z.string().optional().describe('Optional event notes, booking links, or agenda'),
+      location: z.string().optional().describe('Optional venue address or meeting link')
+    },
+    async ({ summary, start_time, end_time, description, location }) => {
+      try {
+        const event = await createCalendarEvent({
+          summary,
+          startTime: start_time,
+          endTime: end_time || null,
+          description: description || '',
+          location: location || ''
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ event }, null, 2) }]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Error creating Google Calendar event: ${err.message}` }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // 11. Search Gmail Messages
+  mcpServer.tool(
+    'search_gmail_messages',
+    'Search messages in the user\'s Gmail inbox using standard Gmail search operators (e.g. "is:unread", "from:alex").',
+    {
+      query: z.string().default('is:inbox').describe('Gmail search query'),
+      max_results: z.number().int().min(1).max(15).default(5).describe('Maximum number of matching messages to return')
+    },
+    async ({ query, max_results }) => {
+      try {
+        const messages = await searchGmailMessages({ query, maxResults: max_results });
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ messages }, null, 2) }]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Error searching Gmail messages: ${err.message}` }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // 12. Compose or Send Gmail Message
+  mcpServer.tool(
+    'compose_gmail_message',
+    'Create a RFC-2822/RFC-2047 sanitized Gmail draft or send an email immediately (e.g. for reservations, follow-ups, or replies).',
+    {
+      to: z.string().describe('Recipient email address'),
+      subject: z.string().describe('Email subject line'),
+      body: z.string().describe('Plain-text email body'),
+      send_immediately: z.boolean().default(false).describe('Set true to send the email immediately; false creates a Gmail draft')
+    },
+    async ({ to, subject, body, send_immediately }) => {
+      try {
+        const result = await createOrSendGmail({
+          to,
+          subject,
+          body,
+          sendImmediately: send_immediately
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Error composing/sending Gmail message: ${err.message}` }],
           isError: true
         };
       }

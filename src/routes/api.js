@@ -195,6 +195,16 @@ router.post('/gmail/drafts', requireAuthIfConfigured, async (req, res) => {
   }
 });
 
+router.post('/gmail/send', requireAuthIfConfigured, async (req, res) => {
+  try {
+    const { to, subject, body } = req.body || {};
+    const result = await createOrSendGmail({ to, subject, body, sendImmediately: true });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ── RAG Indexing & Search ───────────────────────────────────────
 
 router.post('/rag/sync', requireAuthIfConfigured, async (req, res) => {
@@ -260,7 +270,11 @@ router.get('/mcp/info', (req, res) => {
       'delete_drive_file',
       'list_drive_workspace',
       'sync_drive_rag',
-      'get_workspace_status'
+      'get_workspace_status',
+      'list_calendar_events',
+      'create_calendar_event',
+      'search_gmail_messages',
+      'compose_gmail_message'
     ]
   });
 });

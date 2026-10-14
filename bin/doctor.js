@@ -154,7 +154,8 @@ if (nexus.isAvailable) {
 try {
   const server = new McpServer({ name: 'doctor-check', version: '1.0.0' });
   registerMcpTools(server);
-  console.log(`${PASS} MCP Protocol: 8 tools registered successfully on McpServer`);
+  const count = Object.keys(server._registeredTools || {}).length;
+  console.log(`${PASS} MCP Protocol: ${count} tools registered successfully on McpServer (Drive, Calendar, Gmail)`);
 } catch (mcpErr) {
   console.log(`${FAIL} MCP Tool registration failed: ${mcpErr.message}`);
   issues++;

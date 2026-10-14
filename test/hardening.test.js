@@ -135,7 +135,7 @@ test('Hardening: Steering cache invalidation functions cleanly', () => {
   assert.doesNotThrow(() => invalidateSteeringCache());
 });
 
-test('Hardening: MCP server exposes 8 comprehensive tools', () => {
+test('Hardening: MCP server exposes 12 comprehensive Google Workspace tools (Drive, Calendar, Gmail)', () => {
   const server = new McpServer({ name: 'harden-check', version: '1.0.0' });
   registerMcpTools(server);
 
@@ -148,13 +148,17 @@ test('Hardening: MCP server exposes 8 comprehensive tools', () => {
     'delete_drive_file',
     'list_drive_workspace',
     'sync_drive_rag',
-    'get_workspace_status'
+    'get_workspace_status',
+    'list_calendar_events',
+    'create_calendar_event',
+    'search_gmail_messages',
+    'compose_gmail_message'
   ];
 
   for (const name of expectedTools) {
     assert.ok(registeredToolNames.includes(name), `MCP server must include tool: ${name}`);
   }
-  assert.equal(registeredToolNames.length, 8, 'Must have exactly 8 registered MCP tools');
+  assert.equal(registeredToolNames.length, 12, 'Must have exactly 12 registered MCP tools');
 });
 
 test('Hardening: PDF Parsing Engine parses PDF with page citations and headers', async () => {
