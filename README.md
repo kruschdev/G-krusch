@@ -57,7 +57,8 @@ Google Drive /
 
 ### 1. Installation
 ```bash
-cd /home/krusch/homelab/projects/g-krusch
+git clone https://github.com/kruschdev/G-krusch.git
+cd G-krusch
 npm install
 ```
 
@@ -68,6 +69,7 @@ cp .env.example .env
 ```
 
 ### 3. Run Production Diagnostic Doctor & Tests
+*(All 19 unit & hardening tests run hermetically with zero external credentials required)*
 ```bash
 # Run 9-point production diagnostic check (Node 22+, SQLite WAL, FTS5, AES-256-GCM, OAuth, Nexus PDF, MCP, Workspace Extensions)
 npm run doctor
@@ -78,7 +80,7 @@ npm test
 
 ### 4. Launch G-Krusch (CLI or Systemd User Service)
 ```bash
-# Start directly
+# Start directly on http://localhost:5446
 npm start
 
 # Or manage via systemd user service on port 5446
@@ -112,7 +114,7 @@ Endpoints:
   "mcpServers": {
     "g-krusch": {
       "command": "node",
-      "args": ["/home/krusch/homelab/projects/g-krusch/src/index.js", "--stdio"]
+      "args": ["/absolute/path/to/G-krusch/src/index.js", "--stdio"]
     }
   }
 }
