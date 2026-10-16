@@ -16,6 +16,12 @@ export function registerMcpTools(mcpServer) {
     {
       force_refresh: z.boolean().default(false).describe('Force re-fetch from Google Drive ignoring local cache')
     },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async ({ force_refresh }) => {
       try {
         const steering = await getAgentSteering({ forceRefresh: force_refresh });
@@ -43,6 +49,12 @@ export function registerMcpTools(mcpServer) {
     {
       query: z.string().describe('Search query or question to retrieve context for'),
       limit: z.number().int().min(1).max(20).default(5).describe('Maximum number of matching chunks to return')
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
     },
     async ({ query, limit }) => {
       try {
@@ -76,6 +88,12 @@ export function registerMcpTools(mcpServer) {
     {
       file_id: z.string().optional().describe('Google Drive File ID'),
       path: z.string().optional().describe('Relative path in workspace (e.g. "context/spec.md", "agent.md")')
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
     },
     async ({ file_id, path }) => {
       try {
@@ -131,6 +149,12 @@ export function registerMcpTools(mcpServer) {
       content: z.string().describe('Text or markdown content to write'),
       mime_type: z.string().default('text/markdown').describe('MIME type (default: text/markdown)')
     },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async ({ path, content, mime_type }) => {
       try {
         const result = await writeDriveFile({ path, content, mimeType: mime_type });
@@ -158,6 +182,12 @@ export function registerMcpTools(mcpServer) {
     {
       file_id: z.string().optional().describe('Google Drive File ID to delete'),
       path: z.string().optional().describe('Relative path in workspace (e.g. "output/temp.md")')
+    },
+    {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true
     },
     async ({ file_id, path }) => {
       try {
@@ -190,6 +220,12 @@ export function registerMcpTools(mcpServer) {
     'list_drive_workspace',
     'List all files and subdirectories inside the G-Krusch Google Drive workspace.',
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async () => {
       try {
         const tree = await listWorkspaceTree();
@@ -215,6 +251,12 @@ export function registerMcpTools(mcpServer) {
     'sync_drive_rag',
     'Trigger a fresh synchronization of Google Drive workspace files into the local vector RAG index.',
     {},
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async () => {
       try {
         const syncStats = await syncDriveRag();
@@ -240,6 +282,12 @@ export function registerMcpTools(mcpServer) {
     'get_workspace_status',
     'Get real-time operational status of Google Drive connection, workspace root, and RAG index statistics.',
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async () => {
       try {
         const auth = getAuthStatus();
@@ -286,6 +334,12 @@ export function registerMcpTools(mcpServer) {
       time_min: z.string().optional().describe('Optional ISO-8601 lower bound timestamp (defaults to now)'),
       query: z.string().optional().describe('Optional free-text search filter for event titles or descriptions')
     },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async ({ max_results, time_min, query }) => {
       try {
         const events = await listCalendarEvents({
@@ -316,6 +370,12 @@ export function registerMcpTools(mcpServer) {
       description: z.string().optional().describe('Optional event notes, booking links, or agenda'),
       location: z.string().optional().describe('Optional venue address or meeting link')
     },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    },
     async ({ summary, start_time, end_time, description, location }) => {
       try {
         const event = await createCalendarEvent({
@@ -345,6 +405,12 @@ export function registerMcpTools(mcpServer) {
       query: z.string().default('is:inbox').describe('Gmail search query'),
       max_results: z.number().int().min(1).max(15).default(5).describe('Maximum number of matching messages to return')
     },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     async ({ query, max_results }) => {
       try {
         const messages = await searchGmailMessages({ query, maxResults: max_results });
@@ -369,6 +435,12 @@ export function registerMcpTools(mcpServer) {
       subject: z.string().describe('Email subject line'),
       body: z.string().describe('Plain-text email body'),
       send_immediately: z.boolean().default(false).describe('Set true to send the email immediately; false creates a Gmail draft')
+    },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
     },
     async ({ to, subject, body, send_immediately }) => {
       try {

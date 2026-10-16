@@ -135,7 +135,7 @@ test('Hardening: Steering cache invalidation functions cleanly', () => {
   assert.doesNotThrow(() => invalidateSteeringCache());
 });
 
-test('Hardening: MCP server exposes 12 comprehensive Google Workspace tools (Drive, Calendar, Gmail)', () => {
+test('Hardening: MCP server exposes 12 comprehensive Google Workspace tools (Drive, Calendar, Gmail) with full behavioral annotations', () => {
   const server = new McpServer({ name: 'harden-check', version: '1.0.0' });
   registerMcpTools(server);
 
@@ -155,8 +155,15 @@ test('Hardening: MCP server exposes 12 comprehensive Google Workspace tools (Dri
     'compose_gmail_message'
   ];
 
+  const requiredHints = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
+
   for (const name of expectedTools) {
     assert.ok(registeredToolNames.includes(name), `MCP server must include tool: ${name}`);
+    const toolDef = server._registeredTools[name];
+    assert.ok(toolDef.annotations, `Tool ${name} must declare annotations`);
+    for (const hint of requiredHints) {
+      assert.equal(typeof toolDef.annotations[hint], 'boolean', `Tool ${name} annotation ${hint} must be an explicit boolean`);
+    }
   }
   assert.equal(registeredToolNames.length, 12, 'Must have exactly 12 registered MCP tools');
 });

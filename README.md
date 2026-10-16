@@ -11,8 +11,10 @@
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
   <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
   <img src="https://img.shields.io/badge/tests-19%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
+  <a href="https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme"><img src="https://m8ven.ai/badge/mcp/kruschdev/g-krusch" alt="M8ven Score"></a>
 </p>
+<!-- [![M8ven Score](https://m8ven.ai/badge/mcp/kruschdev/g-krusch)](https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme) -->
 
 ---
 
