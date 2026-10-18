@@ -10,7 +10,7 @@
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-green.svg?style=flat-square" alt="Node.js"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
   <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
-  <img src="https://img.shields.io/badge/tests-27%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
+  <img src="https://img.shields.io/badge/tests-29%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
   <a href="https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme"><img src="https://m8ven.ai/badge/mcp/kruschdev/g-krusch" alt="M8ven Score"></a>
 </p>
@@ -23,8 +23,8 @@
 Most AI agents are trapped either in ephemeral context windows or isolated local folders that you can't easily access when away from your workstation. **G-Krusch** bridges the gap between humans, coding agents, and personal assistants (`krusch-companion`) across your Google Workspace:
 
 1. **`agent.md` Cloud-Synced Steering**: Edit your agent rules, project priorities, and personas from your phone, tablet, or web browser directly in Google Drive. When an agent boots, it dynamically pulls the latest instructions via `get_agent_steering` (`GET /api/steering`).
-2. **Hybrid Vector & FTS5 BM25 Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using dense semantic embeddings (Gemini `text-embedding-004` / local Ollama `bge-large:latest` / deterministic 64-dim fallback) fused with SQLite FTS5 Porter-stemmed BM25 keyword search.
-3. **Page-Faithful PDF Extraction**: Integrates directly with **Krusch-Nexus** (`pdftotext -bbox-layout` + Poppler fallback) to extract multi-page PDFs with page citations (`[contract.pdf p.1]`).
+2. **Sovereign 1,024-Dim Vector & FTS5 BM25 Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using a 3-tier dense semantic embedding cascade (Tier 1: local GPU Ollama `bge-large:latest` 1,024-dim -> Tier 2: Gemini `models/gemini-embedding-001` at `outputDimensionality: 1024` -> Tier 3: uncached deterministic 64-dim offline fallback) fused with SQLite FTS5 Porter-stemmed BM25 keyword search.
+3. **3-Tier Page-Faithful PDF Extraction**: Validates `%PDF-` magic bytes prior to disk spooling (`validatePdfMagicBytes`) and extracts multi-page PDFs with page citations (`[contract.pdf p.1]`) via Tier 1 **Krusch-Nexus** (`pdftotext -bbox-layout`), Tier 2 system Poppler `pdftotext`, or Tier 3 pure-JS stream extraction (`extractPdfTextNative`).
 4. **Two-Way Agent Filesystem**: Agents can read project briefs from `context/`, check decision logs in `memory/`, and write deliverables directly into `output/` on Google Drive.
 5. **Google Calendar & Gmail Extensions**: Exposes hardened REST endpoints (`/api/calendar/events`, `/api/gmail/messages`, `/api/gmail/drafts`, `/api/gmail/send`) so **Krusch Companion** can check your schedule, book appointments, search your inbox, and compose RFC-2822 / RFC-2047 emails.
 
@@ -72,12 +72,12 @@ cp .env.example .env
 ```
 
 ### 3. Run Production Diagnostic Doctor & Tests
-*(All 27 unit & hardening tests run hermetically against an isolated temporary SQLite database with zero external credentials required)*
+*(All 29 unit & hardening tests run hermetically against an isolated per-PID temporary SQLite database with zero external credentials required)*
 ```bash
-# Run 9-point production diagnostic check (Node 22+, SQLite WAL, FTS5, AES-256-GCM, OAuth, Nexus PDF, MCP, Workspace Extensions)
+# Run 12-point production diagnostic check (Node 22+, SQLite WAL + busy_timeout, FTS5 sync, 12-byte AES-256-GCM, OAuth, Embeddings, Nexus PDF, MCP, Extensions)
 npm run doctor
 
-# Run all 27 unit & hardening tests
+# Run all 29 unit & hardening tests
 npm test
 ```
 

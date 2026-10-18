@@ -159,30 +159,30 @@ export async function searchGmailMessages({ query = 'is:inbox', maxResults = 5 }
   );
 
   const messages = listRes.data.messages || [];
-  const detailed = [];
+  const detailed = await Promise.all(
+    messages.map(async (msg) => {
+      const detail = await withRetry(() =>
+        gmail.users.messages.get({
+          userId: 'me',
+          id: msg.id,
+          format: 'metadata',
+          metadataHeaders: ['From', 'To', 'Subject', 'Date']
+        })
+      );
+      const headers = detail.data.payload?.headers || [];
+      const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
 
-  for (const msg of messages) {
-    const detail = await withRetry(() =>
-      gmail.users.messages.get({
-        userId: 'me',
-        id: msg.id,
-        format: 'metadata',
-        metadataHeaders: ['From', 'To', 'Subject', 'Date']
-      })
-    );
-    const headers = detail.data.payload?.headers || [];
-    const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
-
-    detailed.push({
-      id: detail.data.id,
-      threadId: detail.data.threadId,
-      from: getHeader('From'),
-      to: getHeader('To'),
-      subject: getHeader('Subject'),
-      date: getHeader('Date'),
-      snippet: detail.data.snippet || ''
-    });
-  }
+      return {
+        id: detail.data.id,
+        threadId: detail.data.threadId,
+        from: getHeader('From'),
+        to: getHeader('To'),
+        subject: getHeader('Subject'),
+        date: getHeader('Date'),
+        snippet: detail.data.snippet || ''
+      };
+    })
+  );
 
   return detailed;
 }

@@ -65,7 +65,7 @@ router.get('/health', (req, res) => {
         email: authStatus.email
       },
       pdf: {
-        engine: nexus.isAvailable ? 'nexus' : (pdftotext ? 'pdftotext' : 'none'),
+        engine: nexus.isAvailable ? 'nexus' : (pdftotext ? 'pdftotext' : 'native-js'),
         nexusPath: nexus.nexusDir
       },
       workspace: {
@@ -97,9 +97,12 @@ router.get('/steering', requireAuthIfConfigured, async (req, res) => {
 
 router.put('/steering', requireAuthIfConfigured, async (req, res) => {
   try {
-    const { content } = req.body;
+    const { content } = req.body || {};
     if (typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing content string in body.' });
+    }
+    if (Buffer.byteLength(content, 'utf-8') > 2 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Steering content exceeds maximum allowed size of 2MB.' });
     }
     const result = await updateAgentSteering(content);
     res.json(result);
@@ -147,11 +150,15 @@ router.get('/drive/read', requireAuthIfConfigured, async (req, res) => {
 
 router.post('/drive/write', requireAuthIfConfigured, async (req, res) => {
   try {
-    const { path: rawPath, content, mimeType } = req.body;
+    const { path: rawPath, content, mimeType } = req.body || {};
     if (!rawPath) return res.status(400).json({ error: 'Path is required.' });
+    const bodyStr = String(content ?? '');
+    if (Buffer.byteLength(bodyStr, 'utf-8') > 2 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Document content exceeds maximum allowed size of 2MB.' });
+    }
 
     const cleanPath = sanitizeWorkspacePath(rawPath);
-    const result = await writeDriveFile({ path: cleanPath, content: content || '', mimeType });
+    const result = await writeDriveFile({ path: cleanPath, content: bodyStr, mimeType });
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
