@@ -10,9 +10,40 @@ import { sanitizeWorkspacePath } from '../lib/path-utils.js';
 import { getNexusConfig, getPdftotextPath } from '../lib/pdf.js';
 import config from '../config.js';
 
+import { oauthCallbackHandler } from './auth.js';
+
 const router = Router();
 
+// Support Google OAuth redirect URI configured at /api/google/callback
+router.get('/google/callback', oauthCallbackHandler);
+
 // ── Health & Diagnostics ─────────────────────────────────────────
+
+router.get('/status', (req, res) => {
+  try {
+    const db = getDb();
+    const authStatus = getAuthStatus();
+    const docCount = db.prepare('SELECT COUNT(*) as count FROM rag_documents').get()?.count || 0;
+    const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
+    const cachedSteering = db.prepare('SELECT version_hash, drive_file_id, cached_at FROM agent_steering_cache WHERE id = 1').get();
+
+    res.json({
+      status: authStatus.authenticated ? 'connected' : 'disconnected',
+      authenticated: authStatus.authenticated,
+      account: authStatus.email,
+      email: authStatus.email,
+      updatedAt: authStatus.updatedAt,
+      folderName: config.google.workspaceFolderName,
+      documentsIndexed: docCount,
+      totalChunks: chunkCount,
+      steeringCached: Boolean(cachedSteering),
+      steeringVersionHash: cachedSteering?.version_hash || null,
+      authUrl: `${config.baseUrl}/auth/google`
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', authenticated: false, error: err.message });
+  }
+});
 
 router.get('/health', (req, res) => {
   try {
@@ -54,7 +85,7 @@ router.get('/health', (req, res) => {
 
 // ── Steering (agent.md) ──────────────────────────────────────────
 
-router.get('/steering', async (req, res) => {
+router.get('/steering', requireAuthIfConfigured, async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === 'true';
     const steering = await getAgentSteering({ forceRefresh });
@@ -79,7 +110,7 @@ router.put('/steering', requireAuthIfConfigured, async (req, res) => {
 
 // ── Workspace Hierarchy & File Ops ──────────────────────────────
 
-router.get('/workspace/tree', async (req, res) => {
+router.get('/workspace/tree', requireAuthIfConfigured, async (req, res) => {
   try {
     const tree = await listWorkspaceTree();
     res.json(tree);
@@ -88,7 +119,7 @@ router.get('/workspace/tree', async (req, res) => {
   }
 });
 
-router.get('/drive/read', async (req, res) => {
+router.get('/drive/read', requireAuthIfConfigured, async (req, res) => {
   try {
     let targetId = req.query.fileId;
     const rawPath = req.query.path;
@@ -141,7 +172,7 @@ router.delete('/drive/file', requireAuthIfConfigured, async (req, res) => {
   }
 });
 
-router.get('/drive/overview', async (req, res) => {
+router.get('/drive/overview', requireAuthIfConfigured, async (req, res) => {
   try {
     const overview = await getDriveOverview();
     res.json(overview);
@@ -152,7 +183,7 @@ router.get('/drive/overview', async (req, res) => {
 
 // ── Google Calendar & Gmail Extension Endpoints ─────────────────
 
-router.get('/calendar/events', async (req, res) => {
+router.get('/calendar/events', requireAuthIfConfigured, async (req, res) => {
   try {
     const maxResults = parseInt(req.query.limit || '10', 10);
     const timeMin = req.query.timeMin || null;
@@ -174,7 +205,7 @@ router.post('/calendar/events', requireAuthIfConfigured, async (req, res) => {
   }
 });
 
-router.get('/gmail/messages', async (req, res) => {
+router.get('/gmail/messages', requireAuthIfConfigured, async (req, res) => {
   try {
     const query = req.query.q || 'is:inbox';
     const maxResults = parseInt(req.query.limit || '5', 10);
@@ -216,7 +247,7 @@ router.post('/rag/sync', requireAuthIfConfigured, async (req, res) => {
   }
 });
 
-router.get('/rag/search', async (req, res) => {
+router.get('/rag/search', requireAuthIfConfigured, async (req, res) => {
   try {
     const rawQuery = String(req.query.q || '').slice(0, 300);
     if (!rawQuery.trim()) {
@@ -230,7 +261,7 @@ router.get('/rag/search', async (req, res) => {
   }
 });
 
-router.get('/rag/stats', (req, res) => {
+router.get('/rag/stats', requireAuthIfConfigured, (req, res) => {
   try {
     const db = getDb();
     const docCount = db.prepare('SELECT COUNT(*) as count FROM rag_documents').get()?.count || 0;

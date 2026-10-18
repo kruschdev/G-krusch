@@ -10,7 +10,7 @@
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-green.svg?style=flat-square" alt="Node.js"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
   <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
-  <img src="https://img.shields.io/badge/tests-19%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
+  <img src="https://img.shields.io/badge/tests-25%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
   <a href="https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme"><img src="https://m8ven.ai/badge/mcp/kruschdev/g-krusch" alt="M8ven Score"></a>
 </p>
@@ -23,10 +23,10 @@
 Most AI agents are trapped either in ephemeral context windows or isolated local folders that you can't easily access when away from your workstation. **G-Krusch** bridges the gap between humans, coding agents, and personal assistants (`krusch-companion`) across your Google Workspace:
 
 1. **`agent.md` Cloud-Synced Steering**: Edit your agent rules, project priorities, and personas from your phone, tablet, or web browser directly in Google Drive. When an agent boots, it dynamically pulls the latest instructions via `get_agent_steering` (`GET /api/steering`).
-2. **Hybrid Vector & FTS5 BM25 Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using dense semantic embeddings (Gemini `text-embedding-004` / local Ollama / deterministic 64-dim fallback) fused with SQLite FTS5 Porter-stemmed BM25 keyword search.
+2. **Hybrid Vector & FTS5 BM25 Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using dense semantic embeddings (Gemini `text-embedding-004` / local Ollama `bge-large:latest` / deterministic 64-dim fallback) fused with SQLite FTS5 Porter-stemmed BM25 keyword search.
 3. **Page-Faithful PDF Extraction**: Integrates directly with **Krusch-Nexus** (`pdftotext -bbox-layout` + Poppler fallback) to extract multi-page PDFs with page citations (`[contract.pdf p.1]`).
 4. **Two-Way Agent Filesystem**: Agents can read project briefs from `context/`, check decision logs in `memory/`, and write deliverables directly into `output/` on Google Drive.
-5. **Google Calendar & Gmail Extensions**: Exposes hardened REST endpoints (`/api/calendar/events`, `/api/gmail/messages`, `/api/gmail/drafts`) so **Krusch Companion** can check your schedule, book appointments, search your inbox, and compose RFC-2822 / RFC-2047 emails.
+5. **Google Calendar & Gmail Extensions**: Exposes hardened REST endpoints (`/api/calendar/events`, `/api/gmail/messages`, `/api/gmail/drafts`, `/api/gmail/send`) so **Krusch Companion** can check your schedule, book appointments, search your inbox, and compose RFC-2822 / RFC-2047 emails.
 
 ---
 
@@ -47,11 +47,12 @@ Google Drive /
 
 ## 🛡️ Security & Concurrency Hardening
 
-* **AES-256-GCM Encrypted Token Vault (`src/lib/crypto.js` & `src/lib/db.js`)**: OAuth 2.0 access and refresh tokens are encrypted at rest in SQLite WAL using AES-256-GCM with random 12-byte IVs and 16-byte authentication tags.
-* **FIFO Keyed Mutex (`src/lib/mutex.js`)**: `AsyncKeyedMutex` serializes concurrent OAuth token refreshes (`oauth_token_refresh`), workspace folder provisioning (`workspace_root`), per-path file writes (`write:<path>`), and RAG indexing (`sync_rag`) with automatic timeout release to prevent deadlocks.
-* **Path Traversal & Dotfile Sanitizer (`src/lib/path-utils.js`)**: Strictly blocks `..`, null bytes, absolute paths, and sensitive file patterns (`.env`, `.git`, `id_rsa`, `.pem`).
-* **CRLF Header Injection Shield & RFC 2047 UTF-8 Encoder (`src/lib/extensions.js`)**: Strips CR/LF and control characters from email headers, validates recipient addresses, and encodes non-ASCII subjects (such as emojis or em-dashes) using `=?UTF-8?B?...?=`.
-* **Constant-Time API Key Guard (`src/lib/auth-guard.js`)**: Uses `crypto.timingSafeEqual` when `API_KEY` or `GCRUSH_SECRET` is configured to protect mutating endpoints against timing side-channel attacks, paired with HTML escaping (`escapeHtml`) on OAuth callback pages.
+* **AES-256-GCM Encrypted Token Vault (`src/lib/crypto.js` & `src/lib/db.js`)**: OAuth 2.0 access and refresh tokens are encrypted at rest in SQLite WAL using AES-256-GCM with NIST SP 800-38D 12-byte (96-bit) IVs and 16-byte authentication tags (plus transparent legacy 16-byte IV decryption).
+* **OAuth 2.0 CSRF State & CORS Origin Lockdown (`src/lib/oauth.js` & `src/lib/auth-guard.js`)**: Generates one-time 32-byte CSRF `state` tokens with constant-time validation on `/auth/google/callback`, and restricts browser CORS requests to trusted localhost, RFC1918 LAN, and Tailscale (`100.64.0.0/10`) origins.
+* **FIFO Keyed Mutex & Atomic SQLite Transactions (`src/lib/mutex.js` & `src/lib/rag.js`)**: `AsyncKeyedMutex` serializes concurrent OAuth token refreshes, workspace provisioning, per-path writes, and RAG indexing, while `saveIndexedDocumentTransactional` commits document chunks and FTS5 indices atomically with automatic FTS5 self-healing (`ensureFtsSync`).
+* **Path Traversal, Drive Query Escaping & Workspace Boundary Guard (`src/lib/path-utils.js` & `src/lib/drive.js`)**: Blocks `..`, control characters, and sensitive dotfiles (`.env`, `.git`, `id_rsa`, `.pem`), escapes backslashes and quotes in Drive API queries, and verifies workspace ancestry before trashing any file by `fileId`.
+* **CRLF Header Injection Shield & RFC 2047 UTF-8 Encoder (`src/lib/extensions.js`)**: Strips CR/LF and control characters from email headers, validates recipient addresses, and encodes non-ASCII subjects using `=?UTF-8?B?...?=`.
+* **Constant-Time API Key Guard (`src/lib/auth-guard.js`)**: Uses `crypto.timingSafeEqual` when `API_KEY` or `GCRUSH_SECRET` is configured to protect workspace and MCP endpoints against timing side-channel attacks, paired with HTML escaping (`escapeHtml`) on OAuth callback pages.
 
 ---
 
@@ -71,12 +72,12 @@ cp .env.example .env
 ```
 
 ### 3. Run Production Diagnostic Doctor & Tests
-*(All 19 unit & hardening tests run hermetically with zero external credentials required)*
+*(All 25 unit & hardening tests run hermetically against an isolated temporary SQLite database with zero external credentials required)*
 ```bash
 # Run 9-point production diagnostic check (Node 22+, SQLite WAL, FTS5, AES-256-GCM, OAuth, Nexus PDF, MCP, Workspace Extensions)
 npm run doctor
 
-# Run all 19 unit & hardening tests
+# Run all 25 unit & hardening tests
 npm test
 ```
 

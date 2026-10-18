@@ -5,7 +5,7 @@ import { getAuthenticatedClient } from './oauth.js';
 import { getMetadata, setMetadata } from './db.js';
 import { withRetry } from './retry.js';
 import { mutex } from './mutex.js';
-import { sanitizeWorkspacePath } from './path-utils.js';
+import { sanitizeWorkspacePath, escapeDriveQueryLiteral, isValidDriveId } from './path-utils.js';
 import { parsePdfBuffer } from './pdf.js';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB safety cap
@@ -43,7 +43,7 @@ export async function getOrCreateWorkspaceFolder() {
     const cachedFolderId = getMetadata('workspace_root_id');
     const drive = await getDrive();
 
-    if (cachedFolderId) {
+    if (cachedFolderId && isValidDriveId(cachedFolderId)) {
       try {
         const res = await withRetry(() => drive.files.get({
           fileId: cachedFolderId,
@@ -60,7 +60,7 @@ export async function getOrCreateWorkspaceFolder() {
     const folderName = config.google.workspaceFolderName;
 
     // Search for folder in user's Drive root
-    const query = `name = '${folderName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const query = `name = '${escapeDriveQueryLiteral(folderName)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     const listRes = await withRetry(() => drive.files.list({
       q: query,
       spaces: 'drive',
@@ -119,7 +119,7 @@ export async function resolvePathToId(relativePath, options = { createParents: f
     const segment = segments[i];
     const isLast = i === segments.length - 1;
 
-    const q = `'${currentParentId}' in parents and name = '${segment.replace(/'/g, "\\'")}' and trashed = false`;
+    const q = `'${escapeDriveQueryLiteral(currentParentId)}' in parents and name = '${escapeDriveQueryLiteral(segment)}' and trashed = false`;
     const res = await withRetry(() => drive.files.list({
       q,
       fields: 'files(id, name, mimeType)'
@@ -156,7 +156,7 @@ async function listFolderFiles(drive, parentId) {
 
   do {
     const res = await withRetry(() => drive.files.list({
-      q: `'${parentId}' in parents and trashed = false`,
+      q: `'${escapeDriveQueryLiteral(parentId)}' in parents and trashed = false`,
       fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, webViewLink, iconLink)',
       orderBy: 'folder, name',
       pageSize: 100,
@@ -211,7 +211,9 @@ export async function listWorkspaceTree() {
  * Reads a document or file from Google Drive with size limits, format conversion, and binary guards.
  */
 export async function readDriveFile(fileId) {
-  if (!fileId) throw new Error('fileId is required to read file.');
+  if (!fileId || !isValidDriveId(fileId)) {
+    throw new Error('A valid Google Drive fileId is required to read file.');
+  }
   const drive = await getDrive();
 
   const metaRes = await withRetry(() => drive.files.get({
@@ -318,7 +320,7 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
     }
 
     // Check if file already exists in target parent
-    const q = `'${targetParentId}' in parents and name = '${fileName.replace(/'/g, "\\'")}' and trashed = false`;
+    const q = `'${escapeDriveQueryLiteral(targetParentId)}' in parents and name = '${escapeDriveQueryLiteral(fileName)}' and trashed = false`;
     const existingRes = await withRetry(() => drive.files.list({
       q,
       fields: 'files(id, name, mimeType)'
@@ -359,15 +361,43 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
 }
 
 /**
+ * Verifies that a target file or folder is a descendant of the workspace root folder.
+ */
+export async function isFileInWorkspace(drive, targetId, rootId, maxDepth = 8) {
+  if (!targetId || !rootId || !isValidDriveId(targetId)) return false;
+  if (targetId === rootId) return true;
+
+  let currentId = targetId;
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const meta = await withRetry(() => drive.files.get({
+      fileId: currentId,
+      fields: 'id, parents'
+    }));
+    const parents = meta.data?.parents || [];
+    if (parents.length === 0) return false;
+    if (parents.includes(rootId)) return true;
+    currentId = parents[0];
+  }
+  return false;
+}
+
+/**
  * Safely trashes a file or folder inside the workspace.
+ * Enforces workspace boundary verification so files outside G-Krusch cannot be trashed.
  */
 export async function deleteDriveFile({ fileId, path: relativePath }) {
   let targetId = fileId;
+  let resolvedFromWorkspacePath = false;
+
   if (!targetId && relativePath) {
     targetId = await resolvePathToId(relativePath);
+    resolvedFromWorkspacePath = true;
   }
   if (!targetId) {
     throw new Error('Target file not found for deletion.');
+  }
+  if (!isValidDriveId(targetId)) {
+    throw new Error(`Invalid Google Drive fileId: "${targetId}"`);
   }
 
   const rootId = await getOrCreateWorkspaceFolder();
@@ -377,6 +407,13 @@ export async function deleteDriveFile({ fileId, path: relativePath }) {
 
   return mutex.runExclusive(`delete:${targetId}`, async () => {
     const drive = await getDrive();
+    if (!resolvedFromWorkspacePath) {
+      const inWorkspace = await isFileInWorkspace(drive, targetId, rootId);
+      if (!inWorkspace) {
+        throw new Error('Refusing to delete file outside the G-Krusch workspace boundary.');
+      }
+    }
+
     await withRetry(() => drive.files.update({
       fileId: targetId,
       requestBody: { trashed: true }
@@ -392,7 +429,7 @@ export async function searchWorkspaceFiles(query, { maxResults = 10 } = {}) {
   const drive = await getDrive();
   const safeLimit = Math.min(Math.max(1, maxResults), 50);
 
-  const cleanQuery = query.replace(/'/g, "\\'").slice(0, 200);
+  const cleanQuery = escapeDriveQueryLiteral(String(query || '').slice(0, 200));
   const q = `fullText contains '${cleanQuery}' and trashed = false`;
   const res = await withRetry(() => drive.files.list({
     q,

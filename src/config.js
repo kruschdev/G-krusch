@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -8,12 +9,22 @@ const rootDir = path.resolve(__dirname, '..');
 
 dotenv.config({ path: path.join(rootDir, '.env') });
 
+const isTestRuntime =
+  process.env.NODE_ENV === 'test' ||
+  process.execArgv.includes('--test') ||
+  process.argv.some(arg => arg.endsWith('.test.js'));
+
+const resolvedDbPath = isTestRuntime
+  ? path.resolve(process.env.GCRUSH_TEST_DB_PATH || path.join(os.tmpdir(), `gcrush-test-${process.pid}.db`))
+  : path.resolve(rootDir, process.env.DATABASE_PATH || './data/gcrush.db');
+
 export const config = {
   port: parseInt(process.env.PORT || '5446', 10),
   baseUrl: process.env.BASE_URL || `http://localhost:${process.env.PORT || '5446'}`,
   rootDir,
-  dataDir: path.join(rootDir, 'data'),
-  dbPath: path.resolve(rootDir, process.env.DATABASE_PATH || './data/gcrush.db'),
+  isTestRuntime,
+  dataDir: isTestRuntime ? path.dirname(resolvedDbPath) : path.join(rootDir, 'data'),
+  dbPath: resolvedDbPath,
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
@@ -36,7 +47,7 @@ export const config = {
   ai: {
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434/api/embeddings',
-    ollamaModel: process.env.OLLAMA_MODEL || 'nomic-embed-text'
+    ollamaModel: process.env.OLLAMA_MODEL || 'bge-large:latest'
   }
 };
 

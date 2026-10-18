@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import config from '../config.js';
 
 const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 16;
+const IV_LENGTH = 12; // NIST SP 800-38D recommended 96-bit IV for AES-GCM
 const AUTH_TAG_LENGTH = 16;
 
 /**
@@ -26,7 +26,7 @@ export function encrypt(text) {
   if (!text) return '';
   const key = getDerivedKey();
   const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
 
   let encrypted = cipher.update(text, 'utf8', 'hex');
   encrypted += cipher.final('hex');
@@ -37,7 +37,7 @@ export function encrypt(text) {
 
 /**
  * Decrypts an AES-256-GCM encrypted string.
- * Supports transparent fallback for legacy plaintext JSON.
+ * Supports transparent fallback for legacy plaintext JSON and 12-byte or 16-byte IVs.
  */
 export function decrypt(encryptedText) {
   if (!encryptedText) return '';
@@ -49,16 +49,19 @@ export function decrypt(encryptedText) {
 
   const parts = encryptedText.split(':');
   if (parts.length !== 3) {
-    // Unknown format, return as is
     return encryptedText;
   }
 
   const [ivHex, tagHex, cipherHex] = parts;
-  const key = getDerivedKey();
   const iv = Buffer.from(ivHex, 'hex');
   const tag = Buffer.from(tagHex, 'hex');
 
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  if ((iv.length !== 12 && iv.length !== 16) || tag.length !== AUTH_TAG_LENGTH) {
+    throw new Error('Invalid AES-256-GCM IV or authentication tag length.');
+  }
+
+  const key = getDerivedKey();
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(tag);
 
   let decrypted = decipher.update(cipherHex, 'hex', 'utf8');

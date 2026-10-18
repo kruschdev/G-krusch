@@ -19,6 +19,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import config from './config.js';
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
+import { createCorsOptions, requireAuthIfConfigured } from './lib/auth-guard.js';
 import { registerMcpTools } from './mcp/tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -44,7 +45,7 @@ if (isStdio) {
   // ── Express App Setup ──────────────────────────────────────────
 
   const app = express();
-  app.use(cors());
+  app.use(cors(createCorsOptions()));
   app.use(express.json({ limit: '2mb' }));
 
   // Mount API & Auth routes
@@ -78,7 +79,7 @@ if (isStdio) {
     }
   }, 15000);
 
-  app.get('/mcp/sse', async (req, res) => {
+  app.get('/mcp/sse', requireAuthIfConfigured, async (req, res) => {
     if (transports.size >= MAX_CONCURRENT_TRANSPORTS) {
       return res.status(429).json({ error: 'Max concurrent MCP SSE connections reached.' });
     }
@@ -104,7 +105,7 @@ if (isStdio) {
     }
   });
 
-  app.post('/mcp/messages', async (req, res) => {
+  app.post('/mcp/messages', requireAuthIfConfigured, async (req, res) => {
     const sessionId = req.query.sessionId;
     const entry = transports.get(sessionId);
 
@@ -143,6 +144,24 @@ if (isStdio) {
     console.log(`======================================================\n`);
   });
 
+  // If GOOGLE_REDIRECT_URI uses a different localhost port (e.g. :3500 from Google Cloud Console),
+  // bind a secondary listener on that port so the OAuth callback completes seamlessly.
+  let oauthBridgeServer = null;
+  try {
+    const redirectParsed = new URL(config.google.redirectUri);
+    const redirectPort = parseInt(redirectParsed.port, 10);
+    if (redirectPort && redirectPort !== config.port && (redirectParsed.hostname === 'localhost' || redirectParsed.hostname === '127.0.0.1')) {
+      oauthBridgeServer = app.listen(redirectPort, () => {
+        console.log(`🔗 Google OAuth Callback Bridge active at: ${config.google.redirectUri}`);
+      });
+      oauthBridgeServer.on('error', (err) => {
+        console.warn(`[G-Krusch] Could not bind OAuth callback bridge on port ${redirectPort}:`, err.message);
+      });
+    }
+  } catch {
+    // Non-fatal
+  }
+
   // Graceful shutdown
   const gracefulShutdown = (signal) => {
     console.log(`\n[G-Krusch] Received ${signal}, closing server...`);
@@ -151,6 +170,10 @@ if (isStdio) {
     for (const [id, entry] of transports) {
       try { entry.transport.close?.(); } catch {}
       transports.delete(id);
+    }
+
+    if (oauthBridgeServer) {
+      try { oauthBridgeServer.close(); } catch {}
     }
 
     server.close(() => {

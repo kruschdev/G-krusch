@@ -83,7 +83,9 @@ try {
   const missingTables = requiredTables.filter(t => !existingTables.includes(t));
 
   if (missingTables.length === 0) {
-    console.log(`${PASS} Database schema: all 7 required core and virtual FTS5 tables present`);
+    const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
+    const ftsCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks_fts').get()?.count || 0;
+    console.log(`${PASS} Database schema: all 7 required core and virtual FTS5 tables present (${chunkCount} chunks / ${ftsCount} FTS5 indexed)`);
   } else {
     console.log(`${FAIL} Database schema missing tables: ${missingTables.join(', ')}`);
     issues++;
@@ -98,11 +100,12 @@ try {
   const testPayload = JSON.stringify({ ping: 'pong', timestamp: Date.now() });
   const cipher = encrypt(testPayload);
   const decrypted = decrypt(cipher);
+  const ivHex = cipher.split(':')[0] || '';
 
-  if (decrypted === testPayload) {
-    console.log(`${PASS} AES-256-GCM encryption engine: roundtrip encrypt/decrypt verified`);
+  if (decrypted === testPayload && ivHex.length === 24) {
+    console.log(`${PASS} AES-256-GCM encryption engine: 96-bit IV roundtrip encrypt/decrypt verified`);
   } else {
-    console.log(`${FAIL} AES-256-GCM crypto decryption mismatch`);
+    console.log(`${FAIL} AES-256-GCM crypto verification mismatch`);
     issues++;
   }
 } catch (cryptoErr) {

@@ -1,14 +1,52 @@
+import crypto from 'crypto';
 import { google } from 'googleapis';
 import config from '../config.js';
 import { saveCredentials, getCredentials, deleteCredentials } from './db.js';
+import { isTimingSafeMatch } from './auth-guard.js';
 import { mutex } from './mutex.js';
 
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 let cachedClient = null;
 let cachedTokensHash = null;
+let pendingOAuthState = null;
 
 export function resetOAuthClientCache() {
   cachedClient = null;
   cachedTokensHash = null;
+}
+
+export function generateOAuthState() {
+  const state = crypto.randomBytes(32).toString('hex');
+  pendingOAuthState = {
+    state,
+    expiresAt: Date.now() + OAUTH_STATE_TTL_MS
+  };
+  return state;
+}
+
+export function hasPendingOAuthState() {
+  if (!pendingOAuthState) return false;
+  if (Date.now() > pendingOAuthState.expiresAt) {
+    pendingOAuthState = null;
+    return false;
+  }
+  return true;
+}
+
+export function verifyOAuthState(candidateState) {
+  if (!pendingOAuthState) {
+    return false;
+  }
+  const { state, expiresAt } = pendingOAuthState;
+  if (Date.now() > expiresAt) {
+    pendingOAuthState = null;
+    return false;
+  }
+  const matched = isTimingSafeMatch(String(candidateState || ''), state);
+  if (matched) {
+    pendingOAuthState = null;
+  }
+  return matched;
 }
 
 export function createOAuth2Client() {
@@ -23,12 +61,16 @@ export function createOAuth2Client() {
   );
 }
 
-export function getAuthorizationUrl() {
+export function getAuthorizationUrl(loginHint) {
   const client = createOAuth2Client();
+  const hint = (loginHint || process.env.GOOGLE_LOGIN_HINT || '').trim();
+  const state = generateOAuthState();
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: config.google.scopes
+    scope: config.google.scopes,
+    state,
+    ...(hint ? { login_hint: hint } : {})
   });
 }
 

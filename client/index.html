@@ -242,7 +242,7 @@
         </div>
 
         <div class="tools-inventory-section glass">
-          <h3>Exposed Agent Tools (8 Tools)</h3>
+          <h3>Exposed Agent Tools (12 Tools)</h3>
           <div class="tools-grid">
             <div class="tool-item">
               <div class="tool-name"><code>get_agent_steering</code></div>
@@ -275,6 +275,22 @@
             <div class="tool-item">
               <div class="tool-name"><code>get_workspace_status</code></div>
               <div class="tool-desc">Returns real-time health, drive auth state, folder layout, storage quota, and active PDF parser engine.</div>
+            </div>
+            <div class="tool-item">
+              <div class="tool-name"><code>list_calendar_events</code></div>
+              <div class="tool-desc">Lists upcoming events from the user's primary Google Calendar with time window and search filters.</div>
+            </div>
+            <div class="tool-item">
+              <div class="tool-name"><code>create_calendar_event</code></div>
+              <div class="tool-desc">Schedules a new event or reservation hold on the user's primary Google Calendar.</div>
+            </div>
+            <div class="tool-item">
+              <div class="tool-name"><code>search_gmail_messages</code></div>
+              <div class="tool-desc">Searches Gmail inbox messages using standard Gmail search operators (e.g. <code>is:unread</code>).</div>
+            </div>
+            <div class="tool-item">
+              <div class="tool-name"><code>compose_gmail_message</code></div>
+              <div class="tool-desc">Creates an RFC-2822 / RFC-2047 sanitized Gmail draft or sends an email immediately.</div>
             </div>
           </div>
         </div>

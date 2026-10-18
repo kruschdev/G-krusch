@@ -240,20 +240,23 @@ export async function syncDriveRag() {
 
     await walkAndIndex(rootId, '');
 
-    // Purge stale/deleted documents from SQLite
+    // Purge stale/deleted documents from SQLite inside an atomic transaction
     const db = getDb();
     const existingDocs = db.prepare('SELECT file_id FROM rag_documents').all();
     let deletedCount = 0;
     const deleteDocStmt = db.prepare('DELETE FROM rag_documents WHERE file_id = ?');
     const deleteFtsStmt = db.prepare('DELETE FROM rag_chunks_fts WHERE file_id = ?');
 
-    for (const doc of existingDocs) {
-      if (!seenFileIds.has(doc.file_id)) {
-        deleteDocStmt.run(doc.file_id);
-        deleteFtsStmt.run(doc.file_id);
-        deletedCount++;
+    const purgeStaleTx = db.transaction((docs) => {
+      for (const doc of docs) {
+        if (!seenFileIds.has(doc.file_id)) {
+          deleteDocStmt.run(doc.file_id);
+          deleteFtsStmt.run(doc.file_id);
+          deletedCount++;
+        }
       }
-    }
+    });
+    purgeStaleTx(existingDocs);
 
     return {
       updatedFiles: updatedCount,
@@ -263,6 +266,58 @@ export async function syncDriveRag() {
       syncedAt: new Date().toISOString()
     };
   });
+}
+
+/**
+ * Atomically persists a document and all of its embedded chunks into rag_documents, rag_chunks, and rag_chunks_fts.
+ */
+export function saveIndexedDocumentTransactional({
+  fileId,
+  name,
+  mimeType,
+  webViewLink = '',
+  modifiedTime,
+  embeddedChunks
+}) {
+  const db = getDb();
+
+  const upsertDocStmt = db.prepare(`
+    INSERT INTO rag_documents (file_id, name, mime_type, web_view_link, modified_time, synced_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(file_id) DO UPDATE SET
+      name = excluded.name,
+      mime_type = excluded.mime_type,
+      web_view_link = excluded.web_view_link,
+      modified_time = excluded.modified_time,
+      synced_at = datetime('now')
+  `);
+
+  const clearChunksStmt = db.prepare('DELETE FROM rag_chunks WHERE file_id = ?');
+  const clearFtsStmt = db.prepare('DELETE FROM rag_chunks_fts WHERE file_id = ?');
+
+  const insertChunkStmt = db.prepare(`
+    INSERT INTO rag_chunks (file_id, chunk_index, content, embedding, created_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+  `);
+
+  const insertFtsStmt = db.prepare(`
+    INSERT INTO rag_chunks_fts (content, file_id, chunk_index)
+    VALUES (?, ?, ?)
+  `);
+
+  const writeTx = db.transaction(() => {
+    upsertDocStmt.run(fileId, name, mimeType, webViewLink, modifiedTime);
+    clearChunksStmt.run(fileId);
+    clearFtsStmt.run(fileId);
+
+    for (let i = 0; i < embeddedChunks.length; i++) {
+      const { chunk, embedding } = embeddedChunks[i];
+      insertChunkStmt.run(fileId, i, chunk, JSON.stringify(embedding));
+      insertFtsStmt.run(chunk, fileId, i);
+    }
+  });
+
+  writeTx();
 }
 
 async function indexSingleFile(file, relativePath) {
@@ -290,41 +345,23 @@ async function indexSingleFile(file, relativePath) {
       ? parsedChunks.map(c => (c.citation ? `[${c.citation}]\n${c.text}` : c.text))
       : chunkText(content);
 
-
-    // Save document record
-    db.prepare(`
-      INSERT INTO rag_documents (file_id, name, mime_type, web_view_link, modified_time, synced_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(file_id) DO UPDATE SET
-        name = excluded.name,
-        mime_type = excluded.mime_type,
-        web_view_link = excluded.web_view_link,
-        modified_time = excluded.modified_time,
-        synced_at = datetime('now')
-    `).run(file.id, relativePath, file.mimeType, file.webViewLink || '', file.modifiedTime);
-
-    // Clear old chunks and FTS5 entries
-    db.prepare('DELETE FROM rag_chunks WHERE file_id = ?').run(file.id);
-    db.prepare('DELETE FROM rag_chunks_fts WHERE file_id = ?').run(file.id);
-
-    // Prepared statements for chunk + FTS5 insertion
-    const insertChunkStmt = db.prepare(`
-      INSERT INTO rag_chunks (file_id, chunk_index, content, embedding, created_at)
-      VALUES (?, ?, ?, ?, datetime('now'))
-    `);
-
-    const insertFtsStmt = db.prepare(`
-      INSERT INTO rag_chunks_fts (content, file_id, chunk_index)
-      VALUES (?, ?, ?)
-    `);
-
-    // Insert chunks with generated embeddings (uses SQLite cache)
+    // 1. Compute all embeddings BEFORE mutating the database
+    const embeddedChunks = [];
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      const emb = await generateEmbedding(chunk);
-      insertChunkStmt.run(file.id, i, chunk, JSON.stringify(emb));
-      insertFtsStmt.run(chunk, file.id, i);
+      const embedding = await generateEmbedding(chunk);
+      embeddedChunks.push({ chunk, embedding });
     }
+
+    // 2. Atomically replace document, chunks, and FTS5 records in a single SQLite transaction
+    saveIndexedDocumentTransactional({
+      fileId: file.id,
+      name: relativePath,
+      mimeType: file.mimeType,
+      webViewLink: file.webViewLink || '',
+      modifiedTime: file.modifiedTime,
+      embeddedChunks
+    });
 
     return { updated: true, chunks: chunks.length };
   } catch (err) {

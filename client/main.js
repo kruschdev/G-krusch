@@ -428,6 +428,11 @@ function setupEventListeners() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, content })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        alert(`Error creating file: ${data.error || res.statusText}`);
+        return;
+      }
       modal.style.display = 'none';
       document.getElementById('new-file-path').value = '';
       document.getElementById('new-file-content').value = '';

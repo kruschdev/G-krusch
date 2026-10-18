@@ -1,18 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import path from 'node:path';
 import { AsyncKeyedMutex } from '../src/lib/mutex.js';
-import { sanitizeWorkspacePath, isValidFileName, isForbiddenSegment } from '../src/lib/path-utils.js';
-import { isBinaryMimeType } from '../src/lib/drive.js';
-import { generateEmbedding, cosineSimilarity } from '../src/lib/rag.js';
-import { getDb, getCachedEmbedding, saveCachedEmbedding } from '../src/lib/db.js';
+import {
+  sanitizeWorkspacePath,
+  isValidFileName,
+  isForbiddenSegment,
+  escapeDriveQueryLiteral,
+  isValidDriveId
+} from '../src/lib/path-utils.js';
+import { isBinaryMimeType, isFileInWorkspace } from '../src/lib/drive.js';
+import {
+  generateEmbedding,
+  cosineSimilarity,
+  saveIndexedDocumentTransactional,
+  searchDriveRag
+} from '../src/lib/rag.js';
+import { getDb, getCachedEmbedding, saveCachedEmbedding, ensureFtsSync } from '../src/lib/db.js';
 import { invalidateSteeringCache } from '../src/lib/steering.js';
 import { parsePdfFile, parsePdfBuffer } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
 import { encodeRawEmail, validateEmailAddress, encodeMimeSubject, createCalendarEvent } from '../src/lib/extensions.js';
-import { isTimingSafeMatch } from '../src/lib/auth-guard.js';
+import { isTimingSafeMatch, isAllowedOrigin, requireAuthIfConfigured } from '../src/lib/auth-guard.js';
+import { generateOAuthState, verifyOAuthState, hasPendingOAuthState } from '../src/lib/oauth.js';
+import { encrypt, decrypt } from '../src/lib/crypto.js';
 import { escapeHtml } from '../src/routes/auth.js';
 import { config } from '../src/config.js';
 
@@ -242,6 +257,163 @@ test('Hardening: Timing-safe API key comparison and OAuth HTML escaping', () => 
   const escaped = escapeHtml('<script>alert("xss")</script>');
   assert.equal(escaped, '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
 });
+
+test('Hardening: Hermetic test DB isolation and FTS5 self-healing (INV-01)', () => {
+  const prodDbPath = path.resolve(config.rootDir, './data/gcrush.db');
+  assert.equal(config.isTestRuntime, true, 'Must detect test runtime automatically');
+  assert.notEqual(config.dbPath, prodDbPath, 'Test runtime must never point to live data/gcrush.db');
+
+  const db = getDb();
+  // Seed a document and chunk, then wipe rag_chunks_fts to simulate desynchronization
+  saveIndexedDocumentTransactional({
+    fileId: 'doc_heal_test',
+    name: 'context/heal.md',
+    mimeType: 'text/markdown',
+    modifiedTime: '2026-10-18T00:00:00Z',
+    embeddedChunks: [
+      { chunk: 'Self-healing FTS5 index verification', embedding: [0.5, 0.5, 0.5, 0.5] }
+    ]
+  });
+
+  db.prepare('DELETE FROM rag_chunks_fts').run();
+  const ftsBefore = db.prepare('SELECT COUNT(*) as count FROM rag_chunks_fts').get().count;
+  assert.equal(ftsBefore, 0);
+
+  const healStatus = ensureFtsSync(db);
+  assert.equal(healStatus.healed, true, 'ensureFtsSync must detect and heal FTS5 count mismatch');
+  const ftsAfter = db.prepare('SELECT COUNT(*) as count FROM rag_chunks_fts').get().count;
+  assert.ok(ftsAfter >= 1, 'rag_chunks_fts must be restored from rag_chunks');
+});
+
+test('Hardening: OAuth 2.0 CSRF state lifecycle and zero hardcoded PII (INV-02)', async () => {
+  const oauthSource = await fsp.readFile(path.join(config.rootDir, 'src/lib/oauth.js'), 'utf-8');
+  assert.ok(!oauthSource.includes('@gmail.com'), 'src/lib/oauth.js must not contain hardcoded personal email');
+
+  const stateToken = generateOAuthState();
+  assert.equal(stateToken.length, 64, 'OAuth CSRF state must be a 32-byte (64 hex char) token');
+  assert.equal(hasPendingOAuthState(), true);
+
+  // Wrong state must fail without consuming valid state
+  assert.equal(verifyOAuthState('invalid_state_token'), false);
+  assert.equal(hasPendingOAuthState(), true);
+
+  // Matching state must succeed and consume the state token (one-time use)
+  assert.equal(verifyOAuthState(stateToken), true);
+  assert.equal(hasPendingOAuthState(), false);
+  assert.equal(verifyOAuthState(stateToken), false, 'Replayed OAuth state token must be rejected');
+});
+
+test('Hardening: CORS origin lockdown and API key middleware (INV-03)', () => {
+  // Non-browser / CLI / MCP requests without Origin
+  assert.equal(isAllowedOrigin(undefined), true);
+  // Localhost, LAN, and Tailscale origins
+  assert.equal(isAllowedOrigin('http://localhost:5446'), true);
+  assert.equal(isAllowedOrigin('http://127.0.0.1:3004'), true);
+  assert.equal(isAllowedOrigin('http://192.168.1.13:3004'), true);
+  assert.equal(isAllowedOrigin('http://100.65.159.15:5446'), true);
+  assert.equal(isAllowedOrigin('https://krusch.tailnet.ts.net'), true);
+
+  // Untrusted external origins must be blocked
+  assert.equal(isAllowedOrigin('https://evil-attacker.example.com'), false);
+  assert.equal(isAllowedOrigin('http://100.128.0.1:8080'), false, 'Outside Tailscale 100.64.0.0/10 must be blocked');
+
+  // Verify requireAuthIfConfigured blocks unauthenticated requests when API_KEY is set
+  const prevKey = process.env.API_KEY;
+  process.env.API_KEY = 'test-sovereign-key';
+  try {
+    let statusSent = null;
+    let nextCalled = false;
+    const mockRes = {
+      status(code) { statusSent = code; return this; },
+      json() { return this; }
+    };
+
+    requireAuthIfConfigured({ headers: {}, query: {} }, mockRes, () => { nextCalled = true; });
+    assert.equal(statusSent, 401);
+    assert.equal(nextCalled, false);
+
+    statusSent = null;
+    requireAuthIfConfigured(
+      { headers: { authorization: 'Bearer test-sovereign-key' }, query: {} },
+      mockRes,
+      () => { nextCalled = true; }
+    );
+    assert.equal(statusSent, null);
+    assert.equal(nextCalled, true);
+  } finally {
+    if (prevKey === undefined) delete process.env.API_KEY;
+    else process.env.API_KEY = prevKey;
+  }
+});
+
+test('Hardening: Google Drive query injection escaping and workspace boundary guard (INV-04)', async () => {
+  const malicious = `folder\\' or name != '`;
+  const escaped = escapeDriveQueryLiteral(malicious);
+  assert.equal(escaped, `folder\\\\\\' or name != \\'`, 'Must escape backslashes before single quotes');
+
+  assert.equal(isValidDriveId('1aBcDeFgHiJkLmNoPqRsTuVwXyZ_012345'), true);
+  assert.equal(isValidDriveId(`bad'id`), false);
+  assert.equal(isValidDriveId('../traversal'), false);
+
+  // Mock Google Drive client to verify workspace ancestor check
+  const parentMap = {
+    file_inside: ['subfolder_1'],
+    subfolder_1: ['root_workspace_id'],
+    file_outside: ['some_other_drive_folder'],
+    some_other_drive_folder: ['my_drive_root']
+  };
+  const mockDrive = {
+    files: {
+      get: async ({ fileId }) => ({
+        data: { id: fileId, parents: parentMap[fileId] || [] }
+      })
+    }
+  };
+
+  assert.equal(await isFileInWorkspace(mockDrive, 'file_inside', 'root_workspace_id'), true);
+  assert.equal(await isFileInWorkspace(mockDrive, 'file_outside', 'root_workspace_id'), false);
+});
+
+test('Hardening: AES-256-GCM 12-byte NIST IV and legacy 16-byte IV decryption compatibility (INV-05)', () => {
+  const payload = JSON.stringify({ refresh_token: '1//sovereign-token' });
+  const encrypted = encrypt(payload);
+  const [ivHex, tagHex] = encrypted.split(':');
+
+  assert.equal(ivHex.length, 24, 'New ciphertexts must use 12-byte (24 hex char) IV');
+  assert.equal(tagHex.length, 32, 'Auth tag must be 16 bytes (32 hex chars)');
+  assert.equal(decrypt(encrypted), payload);
+
+  // Verify legacy 16-byte IV ciphertexts still decrypt seamlessly
+  const key = crypto.createHash('sha256')
+    .update(process.env.ENCRYPTION_KEY || config.google.clientSecret || 'g-krusch-homelab-secure-fallback-key-2026')
+    .digest();
+  const legacyIv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, legacyIv);
+  let enc = cipher.update(payload, 'utf8', 'hex') + cipher.final('hex');
+  const legacyTag = cipher.getAuthTag();
+  const legacyCiphertext = `${legacyIv.toString('hex')}:${legacyTag.toString('hex')}:${enc}`;
+
+  assert.equal(decrypt(legacyCiphertext), payload, 'Legacy 16-byte IV ciphertexts must remain decryptable');
+});
+
+test('Hardening: Atomic transactional RAG indexing and hybrid retrieval (INV-06)', async () => {
+  const sampleText = 'Krusch Sovereign Homelab Architecture uses bge-large embeddings and atomic SQLite transactions.';
+  const emb = await generateEmbedding(sampleText);
+
+  saveIndexedDocumentTransactional({
+    fileId: 'doc_atomic_1',
+    name: 'context/architecture.md',
+    mimeType: 'text/markdown',
+    webViewLink: 'https://drive.google.com/file/d/doc_atomic_1/view',
+    modifiedTime: '2026-10-18T12:00:00Z',
+    embeddedChunks: [{ chunk: sampleText, embedding: emb }]
+  });
+
+  const hits = await searchDriveRag('atomic SQLite transactions', { limit: 3 });
+  assert.ok(hits.length > 0, 'Hybrid RAG search must retrieve transactionally indexed document');
+  assert.equal(hits[0].fileId, 'doc_atomic_1');
+});
+
 
 
 

@@ -90,3 +90,22 @@ export function isValidFileName(fileName) {
   return true;
 }
 
+/**
+ * Safely escapes a string literal for interpolation inside a Google Drive v3 `q` filter string.
+ * Escapes backslashes before single quotes to prevent quote-breaking via trailing backslash.
+ */
+export function escapeDriveQueryLiteral(value) {
+  return String(value || '')
+    .replace(/[\x00-\x1F\x7F]/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'");
+}
+
+/**
+ * Validates that a candidate string is a well-formed Google Drive File/Folder ID.
+ */
+export function isValidDriveId(id) {
+  if (!id || typeof id !== 'string') return false;
+  return /^[a-zA-Z0-9_-]{5,128}$/.test(id.trim());
+}
+

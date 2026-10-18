@@ -77,8 +77,45 @@ export function getDb() {
     );
   `);
 
+  ensureFtsSync(db);
+
+  if (config.isTestRuntime && !process.env.GCRUSH_TEST_DB_PATH) {
+    process.once('exit', () => {
+      try { db.close(); } catch {}
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { fs.rmSync(`${config.dbPath}${suffix}`, { force: true }); } catch {}
+      }
+    });
+  }
+
   dbInstance = db;
   return db;
+}
+
+/**
+ * Self-heals the FTS5 virtual table if rag_chunks and rag_chunks_fts counts diverge.
+ */
+export function ensureFtsSync(db = getDb()) {
+  try {
+    const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
+    const ftsCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks_fts').get()?.count || 0;
+
+    if (chunkCount > 0 && ftsCount !== chunkCount) {
+      const rebuildTx = db.transaction(() => {
+        db.prepare('DELETE FROM rag_chunks_fts').run();
+        db.prepare(`
+          INSERT INTO rag_chunks_fts (content, file_id, chunk_index)
+          SELECT content, file_id, chunk_index FROM rag_chunks
+        `).run();
+      });
+      rebuildTx();
+      return { healed: true, restoredChunks: chunkCount };
+    }
+    return { healed: false, restoredChunks: 0 };
+  } catch (err) {
+    console.warn('[DB] FTS5 sync check warning:', err.message);
+    return { healed: false, restoredChunks: 0 };
+  }
 }
 
 export function saveCredentials(id, tokens, email = null) {
