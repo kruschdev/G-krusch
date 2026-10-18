@@ -19,6 +19,7 @@ const resolvedDbPath = isTestRuntime
   : path.resolve(rootDir, process.env.DATABASE_PATH || './data/gcrush.db');
 
 export const config = {
+  host: process.env.HOST || '127.0.0.1',
   port: parseInt(process.env.PORT || '5446', 10),
   baseUrl: process.env.BASE_URL || `http://localhost:${process.env.PORT || '5446'}`,
   rootDir,

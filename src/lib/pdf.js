@@ -35,6 +35,19 @@ export function getPdftotextPath() {
 }
 
 /**
+ * Sanitizes a PDF filename before writing to a local temporary directory or passing to CLI tools.
+ * Strips path traversal segments, replaces unsafe characters, and prefixes leading hyphens.
+ */
+export function sanitizePdfTempName(filename = 'document.pdf') {
+  const base = path.basename(String(filename || 'document.pdf').replace(/\\/g, '/'));
+  let clean = base.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '');
+  if (!clean) clean = 'document.pdf';
+  if (clean.startsWith('-')) clean = `doc_${clean}`;
+  if (!clean.toLowerCase().endsWith('.pdf')) clean = `${clean}.pdf`;
+  return clean.slice(0, 120);
+}
+
+/**
  * Parses a PDF buffer into structured page-cited chunks and text.
  * @param {Buffer} buffer - Raw PDF binary buffer
  * @param {string} filename - Original filename for citation grounding
@@ -44,7 +57,8 @@ export function getPdftotextPath() {
 export async function parsePdfBuffer(buffer, filename = 'document.pdf', options = {}) {
   const timeoutMs = options.timeoutMs ?? 20000;
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gcrush-pdf-'));
-  const tempFilePath = path.join(tempDir, filename.endsWith('.pdf') ? filename : `${filename}.pdf`);
+  const safeFileName = sanitizePdfTempName(filename);
+  const tempFilePath = path.join(tempDir, safeFileName);
 
   try {
     await fsp.writeFile(tempFilePath, buffer);

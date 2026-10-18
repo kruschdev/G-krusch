@@ -74,9 +74,15 @@ export function createCorsOptions() {
 export function requireAuthIfConfigured(req, res, next) {
   const secret = process.env.API_KEY || process.env.GCRUSH_SECRET;
 
-  // If no secret configured, allow local homelab requests
+  // If no secret configured, only allow loopback requests (127.0.0.1 / ::1)
   if (!secret) {
-    return next();
+    const remoteIp = String(req.socket?.remoteAddress || req.ip || '').replace(/^::ffff:/, '');
+    if (!remoteIp || remoteIp === '127.0.0.1' || remoteIp === '::1') {
+      return next();
+    }
+    return res.status(401).json({
+      error: 'Unauthorized: G-Krusch requires API_KEY or GCRUSH_SECRET for non-loopback requests.'
+    });
   }
 
   const authHeader = req.headers.authorization;
@@ -100,5 +106,54 @@ export function requireAuthIfConfigured(req, res, next) {
   }
 
   next();
+}
+
+/**
+ * Sets standard HTTP security headers to prevent MIME sniffing, clickjacking, and referrer leakage.
+ */
+export function securityHeadersMiddleware(_req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  next();
+}
+
+/**
+ * Lightweight in-memory sliding-window rate limiter per client IP.
+ */
+export function createRateLimiter({ windowMs = 60000, maxRequests = 120 } = {}) {
+  /** @type {Map<string, { count: number, resetAt: number }>} */
+  const buckets = new Map();
+
+  return function rateLimitMiddleware(req, res, next) {
+    const now = Date.now();
+    const clientIp = req.ip || req.socket?.remoteAddress || '127.0.0.1';
+    let entry = buckets.get(clientIp);
+
+    if (!entry || now >= entry.resetAt) {
+      entry = { count: 0, resetAt: now + windowMs };
+      buckets.set(clientIp, entry);
+    }
+
+    entry.count += 1;
+
+    if (buckets.size > 1000) {
+      for (const [k, v] of buckets) {
+        if (now >= v.resetAt) buckets.delete(k);
+      }
+    }
+
+    if (entry.count > maxRequests) {
+      const retryAfterSec = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSec));
+      return res.status(429).json({
+        error: 'Rate limit exceeded. Please slow down workspace requests.',
+        retryAfterSeconds: retryAfterSec
+      });
+    }
+
+    next();
+  };
 }
 

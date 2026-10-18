@@ -10,7 +10,7 @@
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-green.svg?style=flat-square" alt="Node.js"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
   <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
-  <img src="https://img.shields.io/badge/tests-25%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
+  <img src="https://img.shields.io/badge/tests-27%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
   <a href="https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme"><img src="https://m8ven.ai/badge/mcp/kruschdev/g-krusch" alt="M8ven Score"></a>
 </p>
@@ -72,12 +72,12 @@ cp .env.example .env
 ```
 
 ### 3. Run Production Diagnostic Doctor & Tests
-*(All 25 unit & hardening tests run hermetically against an isolated temporary SQLite database with zero external credentials required)*
+*(All 27 unit & hardening tests run hermetically against an isolated temporary SQLite database with zero external credentials required)*
 ```bash
 # Run 9-point production diagnostic check (Node 22+, SQLite WAL, FTS5, AES-256-GCM, OAuth, Nexus PDF, MCP, Workspace Extensions)
 npm run doctor
 
-# Run all 25 unit & hardening tests
+# Run all 27 unit & hardening tests
 npm test
 ```
 

@@ -21,11 +21,17 @@ import {
 } from '../src/lib/rag.js';
 import { getDb, getCachedEmbedding, saveCachedEmbedding, ensureFtsSync } from '../src/lib/db.js';
 import { invalidateSteeringCache } from '../src/lib/steering.js';
-import { parsePdfFile, parsePdfBuffer } from '../src/lib/pdf.js';
+import { parsePdfFile, parsePdfBuffer, sanitizePdfTempName } from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
 import { encodeRawEmail, validateEmailAddress, encodeMimeSubject, createCalendarEvent } from '../src/lib/extensions.js';
-import { isTimingSafeMatch, isAllowedOrigin, requireAuthIfConfigured } from '../src/lib/auth-guard.js';
+import {
+  isTimingSafeMatch,
+  isAllowedOrigin,
+  requireAuthIfConfigured,
+  securityHeadersMiddleware,
+  createRateLimiter
+} from '../src/lib/auth-guard.js';
 import { generateOAuthState, verifyOAuthState, hasPendingOAuthState } from '../src/lib/oauth.js';
 import { encrypt, decrypt } from '../src/lib/crypto.js';
 import { escapeHtml } from '../src/routes/auth.js';
@@ -413,6 +419,47 @@ test('Hardening: Atomic transactional RAG indexing and hybrid retrieval (INV-06)
   assert.ok(hits.length > 0, 'Hybrid RAG search must retrieve transactionally indexed document');
   assert.equal(hits[0].fileId, 'doc_atomic_1');
 });
+
+test('Hardening: Multi-process SQLite busy_timeout and PDF temp filename sanitization (INV-08 & INV-09)', () => {
+  const db = getDb();
+  const busyTimeout = db.pragma('busy_timeout');
+  assert.equal(busyTimeout[0]?.timeout, 5000, 'SQLite busy_timeout must be set to 5000ms');
+
+  assert.equal(sanitizePdfTempName('../../etc/passwd'), 'passwd.pdf');
+  assert.equal(sanitizePdfTempName('-rf.pdf'), 'doc_-rf.pdf', 'Leading hyphens must be prefixed to prevent CLI flag injection');
+  assert.equal(sanitizePdfTempName('lease contract (2026).pdf'), 'lease_contract__2026_.pdf');
+});
+
+test('Hardening: HTTP Security Headers and Sliding-Window Rate Limiter (INV-11)', () => {
+  const headers = {};
+  let nextCalled = false;
+  securityHeadersMiddleware({}, {
+    setHeader(k, v) { headers[k] = v; }
+  }, () => { nextCalled = true; });
+
+  assert.equal(nextCalled, true);
+  assert.equal(headers['X-Content-Type-Options'], 'nosniff');
+  assert.equal(headers['X-Frame-Options'], 'DENY');
+  assert.equal(headers['Referrer-Policy'], 'no-referrer');
+
+  const limiter = createRateLimiter({ windowMs: 10000, maxRequests: 2 });
+  let statusSent = null;
+  const mockRes = {
+    setHeader(k, v) { headers[k] = v; },
+    status(c) { statusSent = c; return this; },
+    json() { return this; }
+  };
+
+  limiter({ ip: '10.0.0.99' }, mockRes, () => {});
+  limiter({ ip: '10.0.0.99' }, mockRes, () => {});
+  assert.equal(statusSent, null);
+
+  // 3rd request within window must trigger 429
+  limiter({ ip: '10.0.0.99' }, mockRes, () => {});
+  assert.equal(statusSent, 429);
+  assert.ok(Number(headers['Retry-After']) >= 1);
+});
+
 
 
 

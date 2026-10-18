@@ -19,7 +19,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import config from './config.js';
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
-import { createCorsOptions, requireAuthIfConfigured } from './lib/auth-guard.js';
+import {
+  createCorsOptions,
+  requireAuthIfConfigured,
+  securityHeadersMiddleware,
+  createRateLimiter
+} from './lib/auth-guard.js';
 import { registerMcpTools } from './mcp/tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,12 +50,16 @@ if (isStdio) {
   // ── Express App Setup ──────────────────────────────────────────
 
   const app = express();
+  app.disable('x-powered-by');
+  app.use(securityHeadersMiddleware);
   app.use(cors(createCorsOptions()));
   app.use(express.json({ limit: '2mb' }));
 
+  const apiLimiter = createRateLimiter({ windowMs: 60000, maxRequests: 120 });
+
   // Mount API & Auth routes
-  app.use('/auth', authRoutes);
-  app.use('/api', apiRoutes);
+  app.use('/auth', apiLimiter, authRoutes);
+  app.use('/api', apiLimiter, apiRoutes);
 
   // Serve static dashboard assets from client/dist (or client/)
   const clientDist = path.join(__dirname, '..', 'client', 'dist');
@@ -135,11 +144,12 @@ if (isStdio) {
 
   // ── Boot Server ───────────────────────────────────────────────
 
-  const server = app.listen(config.port, () => {
+  const bindHost = config.host || '127.0.0.1';
+  const server = app.listen(config.port, bindHost, () => {
     console.log(`\n======================================================`);
-    console.log(`🚀 G-Krusch (G-Crush) Hub running at: http://localhost:${config.port}`);
-    console.log(`📡 MCP SSE Transport active at: http://localhost:${config.port}/mcp/sse`);
-    console.log(`🔐 Google OAuth Endpoint: http://localhost:${config.port}/auth/google`);
+    console.log(`🚀 G-Krusch (G-Crush) Hub running at: http://${bindHost}:${config.port}`);
+    console.log(`📡 MCP SSE Transport active at: http://${bindHost}:${config.port}/mcp/sse`);
+    console.log(`🔐 Google OAuth Endpoint: http://${bindHost}:${config.port}/auth/google`);
     console.log(`🛡️ Process hardening & SSE keepalives initialized`);
     console.log(`======================================================\n`);
   });
@@ -151,7 +161,7 @@ if (isStdio) {
     const redirectParsed = new URL(config.google.redirectUri);
     const redirectPort = parseInt(redirectParsed.port, 10);
     if (redirectPort && redirectPort !== config.port && (redirectParsed.hostname === 'localhost' || redirectParsed.hostname === '127.0.0.1')) {
-      oauthBridgeServer = app.listen(redirectPort, () => {
+      oauthBridgeServer = app.listen(redirectPort, '127.0.0.1', () => {
         console.log(`🔗 Google OAuth Callback Bridge active at: ${config.google.redirectUri}`);
       });
       oauthBridgeServer.on('error', (err) => {

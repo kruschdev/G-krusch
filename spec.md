@@ -40,6 +40,20 @@
 1. `AGENTS.md` and `client/index.html` MUST list all 12 MCP tools (`get_agent_steering`, `search_drive_rag`, `read_drive_file`, `write_drive_file`, `delete_drive_file`, `list_drive_workspace`, `sync_drive_rag`, `get_workspace_status`, `list_calendar_events`, `create_calendar_event`, `search_gmail_messages`, `compose_gmail_message`).
 2. `client/main.js` MUST check `res.ok` / `data.error` on file creation (`POST /api/drive/write`) and surface errors to the user rather than silently closing the modal on failed writes.
 
+### INV-08: Multi-Process SQLite Lock Resilience (`busy_timeout` & `synchronous`)
+1. `getDb()` in `src/lib/db.js` MUST set `db.pragma('busy_timeout = 5000')` and `db.pragma('synchronous = NORMAL')` alongside `journal_mode = WAL` so concurrent Express (`:5446`) and `--stdio` MCP processes never fail with immediate `SQLITE_BUSY` errors.
+
+### INV-09: PDF Temp File Path Traversal & CLI Argument Injection Guard
+1. `parsePdfBuffer` in `src/lib/pdf.js` MUST sanitize the temporary filename via `sanitizePdfTempName(filename)` (stripping directory components with `path.basename`, replacing non-`[a-zA-Z0-9._-]` characters, and prefixing leading `-` characters) before writing to `tempDir` or invoking `pdftotext` / `krusch_nexus.cli`.
+
+### INV-10: Bounded Embedding Network Timeouts & Offline Hermetic Test Mode
+1. `generateEmbedding` in `src/lib/rag.js` MUST attach `AbortSignal.timeout(8000)` to Gemini embedding requests and `AbortSignal.timeout(5000)` to Ollama embedding requests so stalled sockets never hang the RAG mutex.
+2. When `config.isTestRuntime` is `true` and `process.env.GCRUSH_TEST_LIVE_EMBEDDINGS !== 'true'`, `generateEmbedding` MUST use the deterministic 64-dimensional vector engine so `npm test` runs 100% offline with zero external API calls or network latency.
+
+### INV-11: HTTP Security Headers, Sliding-Window Rate Limiter & Dependency Hygiene
+1. `src/lib/auth-guard.js` MUST export `securityHeadersMiddleware` (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`) and `createRateLimiter({ windowMs, maxRequests })` (returning HTTP `429` with `Retry-After` header when exceeded), mounted in `src/index.js`.
+2. Unused third-party dependencies (`pg`) MUST be removed from `package.json`.
+
 ---
 
 ## 2. Target Files

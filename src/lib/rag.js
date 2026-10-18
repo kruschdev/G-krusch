@@ -90,15 +90,17 @@ export async function generateEmbedding(text) {
   }
 
   let embedding = null;
+  const useLiveProviders = !config.isTestRuntime || process.env.GCRUSH_TEST_LIVE_EMBEDDINGS === 'true';
 
   // 1. Try Gemini text-embedding-004 if key is provided
-  if (config.ai.geminiApiKey) {
+  if (useLiveProviders && config.ai.geminiApiKey) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${config.ai.geminiApiKey}`;
       const res = await withRetry(async () => {
         const r = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             model: 'models/text-embedding-004',
             content: { parts: [{ text: clean }] }
@@ -124,11 +126,12 @@ export async function generateEmbedding(text) {
   }
 
   // 2. Try Ollama if configured and Gemini did not yield embedding
-  if (!embedding && config.ai.ollamaUrl) {
+  if (useLiveProviders && !embedding && config.ai.ollamaUrl) {
     try {
       const res = await fetch(config.ai.ollamaUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
           model: config.ai.ollamaModel,
           prompt: clean
