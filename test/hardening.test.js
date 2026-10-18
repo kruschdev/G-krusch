@@ -529,3 +529,18 @@ test('Hardening: Pre-spool PDF magic-byte security gate, per-session MCP SSE iso
   }
 });
 
+test('Hardening: 1024-dim sovereign embedding pipeline, cache poisoning guard, and client DOM XSS sanitization (INV-13)', async () => {
+  const ragSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/rag.js'), 'utf-8');
+  assert.ok(ragSrc.includes('models/gemini-embedding-001'), 'Must use active gemini-embedding-001 model');
+  assert.ok(!ragSrc.includes('models/text-embedding-004'), 'Deprecated text-embedding-004 (HTTP 404) must be removed');
+  assert.ok(ragSrc.includes('outputDimensionality: 1024'), 'Gemini fallback must match 1024-dim bge-large dimensionality');
+  assert.ok(ragSrc.includes('escapeDriveQueryLiteral(parentId)'), 'listAllFolderFiles must escape parentId');
+  assert.ok(ragSrc.includes('cached.length >= 256'), 'Production cache lookup must bypass stale <256-dim fallback vectors');
+
+  const clientSrc = await fsp.readFile(path.join(config.rootDir, 'client/main.js'), 'utf-8');
+  assert.ok(clientSrc.includes('function sanitizeSafeUrl(url)'), 'Client must validate webViewLink URLs via sanitizeSafeUrl');
+  assert.ok(clientSrc.includes('rel="noopener noreferrer"'), 'External links must include rel="noopener noreferrer"');
+  assert.ok(clientSrc.includes('escapeHtml(data.error)'), 'Error states rendered via innerHTML must be HTML-escaped');
+  assert.ok(clientSrc.includes('escapeHtml(err.message)'), 'Caught exceptions rendered via innerHTML must be HTML-escaped');
+  assert.ok(clientSrc.includes('loadMcpInfo()'), 'Client must dynamically hydrate MCP connection snippets');
+});

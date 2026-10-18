@@ -97,6 +97,35 @@ async function loadDashboardData() {
   loadWorkspaceTree();
   loadRagStats();
   loadDriveOverview();
+  loadMcpInfo();
+}
+
+async function loadMcpInfo() {
+  const sseCodeEl = document.getElementById('mcp-json-sse');
+  const stdioCodeEl = document.getElementById('mcp-json-stdio');
+  try {
+    const res = await fetch('/api/mcp/info');
+    const data = await res.json();
+    if (sseCodeEl && data.transports?.sse) {
+      sseCodeEl.textContent = JSON.stringify({
+        mcpServers: {
+          'g-krusch': {
+            url: data.transports.sse
+          }
+        }
+      }, null, 2);
+    }
+    if (stdioCodeEl && data.transports?.stdio) {
+      stdioCodeEl.textContent = JSON.stringify({
+        mcpServers: {
+          'g-krusch': {
+            command: data.transports.stdio.command,
+            args: data.transports.stdio.args
+          }
+        }
+      }, null, 2);
+    }
+  } catch {}
 }
 
 // ── Steering (agent.md) ──────────────────────────────────────────
@@ -124,8 +153,10 @@ async function loadSteering(refresh = false) {
     statStatus.textContent = 'agent.md Active';
     statMeta.textContent = `Hash: ${data.versionHash ? data.versionHash.slice(0, 8) : 'clean'}`;
 
-    if (data.webViewLink) {
-      openLink.href = data.webViewLink;
+    const safeDocUrl = sanitizeSafeUrl(data.webViewLink);
+    if (safeDocUrl) {
+      openLink.href = safeDocUrl;
+      openLink.setAttribute('rel', 'noopener noreferrer');
       openLink.style.display = 'inline-flex';
     }
   } catch (err) {
@@ -194,7 +225,7 @@ function renderTreeItem(item) {
           <strong>${escapeHtml(item.name)}/</strong>
           <div class="tree-actions">
             <span class="file-meta-link">${children.length} item(s)</span>
-            <button class="tree-delete-btn" data-id="${item.id}" data-name="${escapeHtml(item.name)}" title="Delete Folder">✕</button>
+            <button class="tree-delete-btn" data-id="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}" title="Delete Folder">✕</button>
           </div>
         </div>
         <div class="tree-node-children">
@@ -206,6 +237,7 @@ function renderTreeItem(item) {
   }
 
   const { icon, badge } = getFileIconAndBadge(item.mimeType, item.name);
+  const safeViewUrl = sanitizeSafeUrl(item.webViewLink);
   return `
     <div class="tree-node">
       <div class="tree-node-title">
@@ -213,8 +245,8 @@ function renderTreeItem(item) {
         <span>${escapeHtml(item.name)}</span>
         ${badge}
         <div class="tree-actions">
-          ${item.webViewLink ? `<a href="${item.webViewLink}" target="_blank" class="file-meta-link">Open in Drive ↗</a>` : ''}
-          <button class="tree-delete-btn" data-id="${item.id}" data-name="${escapeHtml(item.name)}" title="Delete File">✕</button>
+          ${safeViewUrl ? `<a href="${escapeHtml(safeViewUrl)}" target="_blank" rel="noopener noreferrer" class="file-meta-link">Open in Drive ↗</a>` : ''}
+          <button class="tree-delete-btn" data-id="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}" title="Delete File">✕</button>
         </div>
       </div>
     </div>
@@ -229,7 +261,7 @@ async function loadWorkspaceTree() {
     const data = await res.json();
 
     if (data.error) {
-      container.innerHTML = `<div class="empty-state"><p>${data.error}</p></div>`;
+      container.innerHTML = `<div class="empty-state"><p>${escapeHtml(data.error)}</p></div>`;
       return;
     }
 
@@ -274,7 +306,7 @@ async function loadWorkspaceTree() {
       });
     });
   } catch (err) {
-    container.innerHTML = `<div class="empty-state"><p>Error loading files: ${err.message}</p></div>`;
+    container.innerHTML = `<div class="empty-state"><p>Error loading files: ${escapeHtml(err.message)}</p></div>`;
   }
 }
 
@@ -308,7 +340,7 @@ async function runRagSearch() {
     const data = await res.json();
 
     if (data.error) {
-      resultsContainer.innerHTML = `<div class="empty-state"><p>${data.error}</p></div>`;
+      resultsContainer.innerHTML = `<div class="empty-state"><p>${escapeHtml(data.error)}</p></div>`;
       searchBtn.disabled = false;
       return;
     }
@@ -320,20 +352,23 @@ async function runRagSearch() {
       return;
     }
 
-    resultsContainer.innerHTML = list.map(item => `
+    resultsContainer.innerHTML = list.map(item => {
+      const safeViewUrl = sanitizeSafeUrl(item.webViewLink);
+      return `
       <div class="rag-result-card glass">
         <div class="rag-result-header">
-          <span class="rag-doc-name">📄 ${escapeHtml(item.fileName)} (Chunk #${item.chunkIndex})</span>
+          <span class="rag-doc-name">📄 ${escapeHtml(item.fileName)} (Chunk #${escapeHtml(item.chunkIndex)})</span>
           <div style="display:flex;gap:0.75rem;align-items:center;">
             <span class="rag-score-pill">Match: ${Math.round(item.score * 100)}%</span>
-            ${item.webViewLink ? `<a href="${item.webViewLink}" target="_blank" class="file-meta-link">Open ↗</a>` : ''}
+            ${safeViewUrl ? `<a href="${escapeHtml(safeViewUrl)}" target="_blank" rel="noopener noreferrer" class="file-meta-link">Open ↗</a>` : ''}
           </div>
         </div>
         <div class="rag-excerpt">${escapeHtml(item.content)}</div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   } catch (err) {
-    resultsContainer.innerHTML = `<div class="empty-state"><p>Search error: ${err.message}</p></div>`;
+    resultsContainer.innerHTML = `<div class="empty-state"><p>Search error: ${escapeHtml(err.message)}</p></div>`;
   } finally {
     searchBtn.disabled = false;
   }
@@ -458,11 +493,23 @@ function setupEventListeners() {
   });
 }
 
+function sanitizeSafeUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.toString();
+    }
+  } catch {}
+  return '';
+}
+
 function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }

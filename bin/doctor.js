@@ -134,10 +134,14 @@ try {
 }
 
 // 6. AI & Semantic Embedding Provider
-if (config.ai.geminiApiKey) {
-  console.log(`${PASS} AI Embedding Provider: Gemini text-embedding-004 configured via API key`);
+if (config.ai.ollamaUrl && config.ai.geminiApiKey) {
+  console.log(`${PASS} AI Embedding Provider: Ollama ${config.ai.ollamaModel} (1024-dim) + Gemini gemini-embedding-001 fallback configured`);
+} else if (config.ai.ollamaUrl) {
+  console.log(`${PASS} AI Embedding Provider: Ollama ${config.ai.ollamaModel} configured at ${config.ai.ollamaUrl}`);
+} else if (config.ai.geminiApiKey) {
+  console.log(`${PASS} AI Embedding Provider: Gemini gemini-embedding-001 (1024-dim) configured via API key`);
 } else {
-  console.log(`${INFO} Gemini API Key not set. Checking Ollama at ${config.ai.ollamaUrl}...`);
+  console.log(`${INFO} No live embedding provider configured; using deterministic 64-dim fallback`);
 }
 
 // 7. PDF Parsing Engine (Krusch-Nexus + Poppler)

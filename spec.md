@@ -61,6 +61,12 @@
 2. `src/mcp/tools.js` MUST export `createMcpServer()` so each concurrent `/mcp/sse` connection receives an isolated `McpServer` instance instead of throwing `Already connected to a transport` on concurrent SSE connections.
 3. `getAgentSteering` and `updateAgentSteering` in `src/lib/steering.js` MUST share a single mutex key (`'agent_md_steering'`) and escape `rootId` with `escapeDriveQueryLiteral` so concurrent reads and writes to `agent.md` never race.
 
+### INV-13: 1024-Dim Sovereign Embedding Pipeline, Cache Poisoning Prevention & Client DOM XSS Guard
+1. `generateEmbedding` in `src/lib/rag.js` MUST prioritize local GPU Ollama (`bge-large:latest`, 1024-dim) with cloud fallback to `models/gemini-embedding-001` (`outputDimensionality: 1024`, replacing retired `text-embedding-004` which returns HTTP 404).
+2. In production (`useLiveProviders === true`), `generateEmbedding` MUST ignore stale low-dimension (`< 256` dims) cached fallback entries and MUST NOT persist 64-dim offline fallback vectors into `rag_embeddings_cache` during transient network failures.
+3. `listAllFolderFiles` in `src/lib/rag.js` MUST escape `parentId` via `escapeDriveQueryLiteral(parentId)`.
+4. `client/main.js` MUST escape all `data.error`, `err.message`, and `item.id` strings before inserting into `innerHTML`, validate `webViewLink` URLs via `sanitizeSafeUrl(url)` (`https:` / `http:` only) with `rel="noopener noreferrer"`, and dynamically hydrate `#mcp-json-sse` and `#mcp-json-stdio` from `/api/mcp/info`.
+
 ---
 
 ## 2. Target Files

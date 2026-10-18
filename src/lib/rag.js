@@ -4,6 +4,7 @@ import { getDb, searchFtsChunks, getCachedEmbedding, saveCachedEmbedding } from 
 import { getDrive, getOrCreateWorkspaceFolder, readDriveFile } from './drive.js';
 import { mutex } from './mutex.js';
 import { withRetry } from './retry.js';
+import { escapeDriveQueryLiteral } from './path-utils.js';
 
 const MAX_CHUNKS_PER_DOC = 100;
 const MAX_DOC_TEXT_LENGTH = 1024 * 1024; // 1MB text limit per file
@@ -78,55 +79,28 @@ export function chunkText(text, chunkSize = 800, overlap = 150) {
 
 /**
  * Generate vector embedding for a string with SQLite caching.
+ * Prioritizes local GPU Ollama (bge-large:latest, 1024-dim) with cloud fallback to
+ * Gemini gemini-embedding-001 (outputDimensionality: 1024) and prevents 64-dim offline
+ * fallback vectors from poisoning the persistent SQLite cache on transient network errors.
  */
 export async function generateEmbedding(text) {
   const clean = text.replace(/\n+/g, ' ').slice(0, 2048);
   const textHash = crypto.createHash('sha256').update(clean).digest('hex');
-
-  // Check persistent SQLite cache first
-  const cached = getCachedEmbedding(textHash);
-  if (cached && Array.isArray(cached) && cached.length > 0) {
-    return cached;
-  }
-
-  let embedding = null;
   const useLiveProviders = !config.isTestRuntime || process.env.GCRUSH_TEST_LIVE_EMBEDDINGS === 'true';
 
-  // 1. Try Gemini text-embedding-004 if key is provided
-  if (useLiveProviders && config.ai.geminiApiKey) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${config.ai.geminiApiKey}`;
-      const res = await withRetry(async () => {
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(8000),
-          body: JSON.stringify({
-            model: 'models/text-embedding-004',
-            content: { parts: [{ text: clean }] }
-          })
-        });
-        if (!r.ok && r.status === 429) {
-          const err = new Error('Gemini Rate Limit');
-          err.status = 429;
-          throw err;
-        }
-        return r;
-      }, { maxRetries: 2, initialDelayMs: 500 });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.embedding?.values) {
-          embedding = data.embedding.values;
-        }
-      }
-    } catch (e) {
-      console.warn('[RAG] Gemini embedding fallback:', e.message);
+  // Check persistent SQLite cache first (in production, bypass stale <256-dim fallback entries)
+  const cached = getCachedEmbedding(textHash);
+  if (cached && Array.isArray(cached) && cached.length > 0) {
+    if (!useLiveProviders || cached.length >= 256) {
+      return cached;
     }
   }
 
-  // 2. Try Ollama if configured and Gemini did not yield embedding
-  if (useLiveProviders && !embedding && config.ai.ollamaUrl) {
+  let embedding = null;
+  let fromLiveProvider = false;
+
+  // 1. Try Sovereign Local GPU Ollama (bge-large:latest, 1024-dim) first
+  if (useLiveProviders && config.ai.ollamaUrl) {
     try {
       const res = await fetch(config.ai.ollamaUrl, {
         method: 'POST',
@@ -140,18 +114,58 @@ export async function generateEmbedding(text) {
 
       if (res.ok) {
         const data = await res.json();
-        if (data.embedding) embedding = data.embedding;
+        if (Array.isArray(data.embedding) && data.embedding.length > 0) {
+          embedding = data.embedding;
+          fromLiveProvider = true;
+        }
       }
     } catch {}
   }
 
-  // 3. Fallback: Deterministic 64-dimensional feature vector
+  // 2. Cloud Fallback: Gemini gemini-embedding-001 (configured to 1024-dim parity)
+  if (useLiveProviders && !embedding && config.ai.geminiApiKey) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${config.ai.geminiApiKey}`;
+      const res = await withRetry(async () => {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(8000),
+          body: JSON.stringify({
+            model: 'models/gemini-embedding-001',
+            content: { parts: [{ text: clean }] },
+            outputDimensionality: 1024
+          })
+        });
+        if (!r.ok && r.status === 429) {
+          const err = new Error('Gemini Rate Limit');
+          err.status = 429;
+          throw err;
+        }
+        return r;
+      }, { maxRetries: 2, initialDelayMs: 500 });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.embedding?.values) && data.embedding.values.length > 0) {
+          embedding = data.embedding.values;
+          fromLiveProvider = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[RAG] Gemini embedding fallback:', e.message);
+    }
+  }
+
+  // 3. Offline Fallback: Deterministic 64-dimensional feature vector
   if (!embedding) {
     embedding = createDeterministicVector(clean, 64);
   }
 
-  // Cache generated embedding
-  saveCachedEmbedding(textHash, embedding);
+  // Only persist into SQLite cache if produced by a live provider or running in offline/test mode
+  if (fromLiveProvider || !useLiveProviders || (!config.ai.ollamaUrl && !config.ai.geminiApiKey)) {
+    saveCachedEmbedding(textHash, embedding);
+  }
   return embedding;
 }
 
@@ -194,7 +208,7 @@ async function listAllFolderFiles(drive, parentId) {
 
   do {
     const res = await withRetry(() => drive.files.list({
-      q: `'${parentId}' in parents and trashed = false`,
+      q: `'${escapeDriveQueryLiteral(parentId)}' in parents and trashed = false`,
       fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, webViewLink, size)',
       pageSize: 100,
       pageToken: pageToken || undefined
