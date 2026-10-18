@@ -108,8 +108,10 @@ export function registerMcpTools(mcpServer) {
     async ({ file_id, path }) => {
       try {
         let targetId = file_id;
+        let resolvedFromPath = false;
         if (!targetId && path) {
           targetId = await resolvePathToId(path);
+          resolvedFromPath = true;
           if (!targetId) {
             return {
               content: [{ type: 'text', text: `File not found in workspace at path: "${path}"` }],
@@ -125,7 +127,7 @@ export function registerMcpTools(mcpServer) {
           };
         }
 
-        const data = await readDriveFile(targetId);
+        const data = await readDriveFile(targetId, { enforceWorkspace: !resolvedFromPath });
         return {
           content: [
             {

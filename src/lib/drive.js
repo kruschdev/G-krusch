@@ -2,7 +2,7 @@ import { google } from 'googleapis';
 import { Readable } from 'stream';
 import config from '../config.js';
 import { getAuthenticatedClient } from './oauth.js';
-import { getMetadata, setMetadata } from './db.js';
+import { getMetadata, setMetadata, purgeIndexedDocumentTransactional, bumpSteeringCacheEpoch } from './db.js';
 import { withRetry } from './retry.js';
 import { mutex } from './mutex.js';
 import { sanitizeWorkspacePath, escapeDriveQueryLiteral, isValidDriveId } from './path-utils.js';
@@ -208,13 +208,22 @@ export async function listWorkspaceTree() {
 }
 
 /**
- * Reads a document or file from Google Drive with size limits, format conversion, and binary guards.
+ * Reads a document or file from Google Drive with size limits, format conversion,
+ * workspace boundary verification, and binary guards.
  */
-export async function readDriveFile(fileId) {
+export async function readDriveFile(fileId, { enforceWorkspace = true } = {}) {
   if (!fileId || !isValidDriveId(fileId)) {
     throw new Error('A valid Google Drive fileId is required to read file.');
   }
   const drive = await getDrive();
+
+  if (enforceWorkspace) {
+    const rootId = await getOrCreateWorkspaceFolder();
+    const inWorkspace = await isFileInWorkspace(drive, fileId, rootId);
+    if (!inWorkspace) {
+      throw new Error('Refusing to read file outside the G-Krusch workspace boundary.');
+    }
+  }
 
   const metaRes = await withRetry(() => drive.files.get({
     fileId,
@@ -331,6 +340,7 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
       body: Readable.from(Buffer.from(content || '', 'utf8'))
     };
 
+    let result;
     if (existingRes.data.files && existingRes.data.files.length > 0) {
       const existingFile = existingRes.data.files[0];
       const updateRes = await withRetry(() => drive.files.update({
@@ -338,7 +348,7 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
         media,
         fields: 'id, name, mimeType, modifiedTime, webViewLink'
       }));
-      return {
+      result = {
         status: 'updated',
         file: updateRes.data
       };
@@ -352,11 +362,17 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
         media,
         fields: 'id, name, mimeType, modifiedTime, webViewLink'
       }));
-      return {
+      result = {
         status: 'created',
         file: createRes.data
       };
     }
+
+    if (cleanPath.toLowerCase() === 'agent.md' || cleanPath.toLowerCase() === 'agents.md') {
+      bumpSteeringCacheEpoch();
+    }
+
+    return result;
   });
 }
 
@@ -382,7 +398,7 @@ export async function isFileInWorkspace(drive, targetId, rootId, maxDepth = 8) {
 }
 
 /**
- * Safely trashes a file or folder inside the workspace.
+ * Safely trashes a file or folder inside the workspace and purges its local RAG/FTS5 index.
  * Enforces workspace boundary verification so files outside G-Krusch cannot be trashed.
  */
 export async function deleteDriveFile({ fileId, path: relativePath }) {
@@ -418,6 +434,9 @@ export async function deleteDriveFile({ fileId, path: relativePath }) {
       fileId: targetId,
       requestBody: { trashed: true }
     }));
+
+    purgeIndexedDocumentTransactional(targetId);
+
     return { status: 'trashed', fileId: targetId };
   });
 }

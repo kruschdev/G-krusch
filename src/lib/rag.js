@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import config from '../config.js';
-import { getDb, searchFtsChunks, getCachedEmbedding, saveCachedEmbedding } from './db.js';
+import { getDb, searchFtsChunks, getCachedEmbedding, saveCachedEmbedding, purgeIndexedDocumentTransactional } from './db.js';
 import { getDrive, getOrCreateWorkspaceFolder, readDriveFile } from './drive.js';
 import { mutex } from './mutex.js';
 import { withRetry } from './retry.js';
@@ -261,19 +261,13 @@ export async function syncDriveRag() {
     const db = getDb();
     const existingDocs = db.prepare('SELECT file_id FROM rag_documents').all();
     let deletedCount = 0;
-    const deleteDocStmt = db.prepare('DELETE FROM rag_documents WHERE file_id = ?');
-    const deleteFtsStmt = db.prepare('DELETE FROM rag_chunks_fts WHERE file_id = ?');
 
-    const purgeStaleTx = db.transaction((docs) => {
-      for (const doc of docs) {
-        if (!seenFileIds.has(doc.file_id)) {
-          deleteDocStmt.run(doc.file_id);
-          deleteFtsStmt.run(doc.file_id);
-          deletedCount++;
-        }
+    for (const doc of existingDocs) {
+      if (!seenFileIds.has(doc.file_id)) {
+        purgeIndexedDocumentTransactional(doc.file_id);
+        deletedCount++;
       }
-    });
-    purgeStaleTx(existingDocs);
+    }
 
     return {
       updatedFiles: updatedCount,
@@ -352,7 +346,7 @@ async function indexSingleFile(file, relativePath) {
   }
 
   try {
-    const { content, isBinary, chunks: parsedChunks } = await readDriveFile(file.id);
+    const { content, isBinary, chunks: parsedChunks } = await readDriveFile(file.id, { enforceWorkspace: false });
     if (isBinary || !content || !content.trim()) {
       return { updated: false, chunks: 0 };
     }

@@ -19,7 +19,14 @@ import {
   saveIndexedDocumentTransactional,
   searchDriveRag
 } from '../src/lib/rag.js';
-import { getDb, getCachedEmbedding, saveCachedEmbedding, ensureFtsSync } from '../src/lib/db.js';
+import {
+  getDb,
+  getCachedEmbedding,
+  saveCachedEmbedding,
+  ensureFtsSync,
+  purgeIndexedDocumentTransactional,
+  getSteeringCacheEpoch
+} from '../src/lib/db.js';
 import { invalidateSteeringCache } from '../src/lib/steering.js';
 import {
   parsePdfFile,
@@ -544,3 +551,39 @@ test('Hardening: 1024-dim sovereign embedding pipeline, cache poisoning guard, a
   assert.ok(clientSrc.includes('escapeHtml(err.message)'), 'Caught exceptions rendered via innerHTML must be HTML-escaped');
   assert.ok(clientSrc.includes('loadMcpInfo()'), 'Client must dynamically hydrate MCP connection snippets');
 });
+
+test('Hardening: Transactional RAG/FTS5 purge on file deletion and readDriveFile workspace boundary guard', async () => {
+  const db = getDb();
+  const emb = await generateEmbedding('Transient document to be purged upon deletion');
+
+  saveIndexedDocumentTransactional({
+    fileId: 'file_purge_target_1',
+    name: 'output/temp-purge.md',
+    mimeType: 'text/markdown',
+    webViewLink: 'https://drive.google.com/file/d/file_purge_target_1/view',
+    modifiedTime: '2026-10-18T16:25:00Z',
+    embeddedChunks: [{ chunk: 'Transient document to be purged upon deletion', embedding: emb }]
+  });
+
+  db.prepare(`
+    INSERT INTO agent_steering_cache (id, content, version_hash, drive_file_id, drive_modified_time, cached_at)
+    VALUES (1, '# Steering', 'hash1', 'file_purge_target_1', '2026-10-18T16:25:00Z', datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET drive_file_id = excluded.drive_file_id
+  `).run();
+
+  const epochBefore = getSteeringCacheEpoch();
+  const purgeRes = purgeIndexedDocumentTransactional('file_purge_target_1');
+  assert.equal(purgeRes.deleted, true, 'Document row must be deleted');
+  assert.equal(purgeRes.steeringCleared, true, 'Steering cache row must be cleared when matching deleted fileId');
+  assert.ok(getSteeringCacheEpoch() > epochBefore, 'Steering cache epoch must increment when steering file is purged');
+
+  const remainingChunks = db.prepare('SELECT COUNT(*) as c FROM rag_chunks WHERE file_id = ?').get('file_purge_target_1').c;
+  const remainingFts = db.prepare('SELECT COUNT(*) as c FROM rag_chunks_fts WHERE file_id = ?').get('file_purge_target_1').c;
+  assert.equal(remainingChunks, 0, 'All rag_chunks for deleted file must be purged');
+  assert.equal(remainingFts, 0, 'All rag_chunks_fts entries for deleted file must be purged');
+
+  const driveSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/drive.js'), 'utf-8');
+  assert.ok(driveSrc.includes('Refusing to read file outside the G-Krusch workspace boundary.'), 'readDriveFile must enforce workspace boundary when enforceWorkspace is true');
+  assert.ok(driveSrc.includes('purgeIndexedDocumentTransactional(targetId)'), 'deleteDriveFile must atomically purge local RAG/FTS5 index');
+});
+

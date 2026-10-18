@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { getDrive, getOrCreateWorkspaceFolder, readDriveFile, writeDriveFile } from './drive.js';
-import { getDb } from './db.js';
+import { getDb, getSteeringCacheEpoch, bumpSteeringCacheEpoch } from './db.js';
 import { mutex } from './mutex.js';
 import { withRetry } from './retry.js';
 import { escapeDriveQueryLiteral } from './path-utils.js';
@@ -11,10 +11,12 @@ const STEERING_MUTEX_KEY = 'agent_md_steering';
 
 let memorySteeringCache = null;
 let memorySteeringCacheTime = 0;
+let memorySteeringCacheEpoch = -1;
 
 export function invalidateSteeringCache() {
   memorySteeringCache = null;
   memorySteeringCacheTime = 0;
+  memorySteeringCacheEpoch = bumpSteeringCacheEpoch();
 }
 
 const DEFAULT_STARTER_AGENT_MD = `# 🤖 G-Krusch Agent Directives & Operating Manual (\`agent.md\`)
@@ -50,12 +52,22 @@ const DEFAULT_STARTER_AGENT_MD = `# 🤖 G-Krusch Agent Directives & Operating M
  * Features in-memory TTL and graceful offline cache fallback.
  */
 export async function getAgentSteering(options = { forceRefresh: false }) {
-  if (!options.forceRefresh && memorySteeringCache && (Date.now() - memorySteeringCacheTime < STEERING_CACHE_TTL_MS)) {
+  if (
+    !options.forceRefresh &&
+    memorySteeringCache &&
+    memorySteeringCacheEpoch === getSteeringCacheEpoch() &&
+    (Date.now() - memorySteeringCacheTime < STEERING_CACHE_TTL_MS)
+  ) {
     return memorySteeringCache;
   }
 
   return mutex.runExclusive(STEERING_MUTEX_KEY, async () => {
-    if (!options.forceRefresh && memorySteeringCache && (Date.now() - memorySteeringCacheTime < STEERING_CACHE_TTL_MS)) {
+    if (
+      !options.forceRefresh &&
+      memorySteeringCache &&
+      memorySteeringCacheEpoch === getSteeringCacheEpoch() &&
+      (Date.now() - memorySteeringCacheTime < STEERING_CACHE_TTL_MS)
+    ) {
       return memorySteeringCache;
     }
 
@@ -107,6 +119,7 @@ export async function getAgentSteering(options = { forceRefresh: false }) {
         };
         memorySteeringCache = result;
         memorySteeringCacheTime = Date.now();
+        memorySteeringCacheEpoch = getSteeringCacheEpoch();
         return result;
       }
 
@@ -123,11 +136,12 @@ export async function getAgentSteering(options = { forceRefresh: false }) {
         };
         memorySteeringCache = result;
         memorySteeringCacheTime = Date.now();
+        memorySteeringCacheEpoch = getSteeringCacheEpoch();
         return result;
       }
 
       // Fetch updated content from Google Drive
-      const fileData = await readDriveFile(agentFile.id);
+      const fileData = await readDriveFile(agentFile.id, { enforceWorkspace: false });
       let content = fileData.content || DEFAULT_STARTER_AGENT_MD;
       if (content.length > MAX_STEERING_BYTES) {
         content = content.slice(0, MAX_STEERING_BYTES);
@@ -155,6 +169,7 @@ export async function getAgentSteering(options = { forceRefresh: false }) {
       };
       memorySteeringCache = result;
       memorySteeringCacheTime = Date.now();
+      memorySteeringCacheEpoch = getSteeringCacheEpoch();
       return result;
     } catch (networkErr) {
       if (cached && cached.content) {
@@ -217,6 +232,7 @@ export async function updateAgentSteering(newContent) {
 
     memorySteeringCache = result;
     memorySteeringCacheTime = Date.now();
+    memorySteeringCacheEpoch = getSteeringCacheEpoch();
 
     return result;
   });

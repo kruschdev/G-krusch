@@ -228,3 +228,37 @@ export function saveCachedEmbedding(textHash, embedding) {
   `).run(textHash, serialized);
 }
 
+let steeringCacheEpoch = 0;
+
+export function getSteeringCacheEpoch() {
+  return steeringCacheEpoch;
+}
+
+export function bumpSteeringCacheEpoch() {
+  steeringCacheEpoch += 1;
+  return steeringCacheEpoch;
+}
+
+/**
+ * Atomically purges a deleted/trashed Drive file from rag_chunks, rag_chunks_fts,
+ * rag_documents, and agent_steering_cache.
+ */
+export function purgeIndexedDocumentTransactional(fileId) {
+  if (!fileId) return { deleted: false, steeringCleared: false };
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM rag_chunks WHERE file_id = ?').run(fileId);
+    db.prepare('DELETE FROM rag_chunks_fts WHERE file_id = ?').run(fileId);
+    const docRes = db.prepare('DELETE FROM rag_documents WHERE file_id = ?').run(fileId);
+    const steeringRes = db.prepare('DELETE FROM agent_steering_cache WHERE drive_file_id = ?').run(fileId);
+    if (steeringRes.changes > 0) {
+      bumpSteeringCacheEpoch();
+    }
+    return {
+      deleted: docRes.changes > 0,
+      steeringCleared: steeringRes.changes > 0
+    };
+  });
+  return tx();
+}
+

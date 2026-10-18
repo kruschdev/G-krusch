@@ -126,8 +126,10 @@ router.get('/drive/read', requireAuthIfConfigured, async (req, res) => {
   try {
     let targetId = req.query.fileId;
     const rawPath = req.query.path;
+    let resolvedFromPath = false;
     if (!targetId && rawPath) {
       targetId = await resolvePathToId(String(rawPath));
+      resolvedFromPath = true;
       if (!targetId) {
         return res.status(404).json({ error: `File not found in workspace at path: "${rawPath}"` });
       }
@@ -135,7 +137,7 @@ router.get('/drive/read', requireAuthIfConfigured, async (req, res) => {
     if (!targetId) {
       return res.status(400).json({ error: 'Must provide fileId or path query parameter.' });
     }
-    const data = await readDriveFile(targetId);
+    const data = await readDriveFile(targetId, { enforceWorkspace: !resolvedFromPath });
     res.json({
       id: data.meta.id,
       name: data.meta.name,
