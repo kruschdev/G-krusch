@@ -24,7 +24,7 @@ const FAIL = '[\x1b[31mFAIL\x1b[0m]';
 const INFO = '[\x1b[36mINFO\x1b[0m]';
 
 console.log('\n======================================================');
-console.log('🩺  G-Krusch (G-Crush) Production Diagnostic Doctor');
+console.log('🩺  G-Krusch Production Diagnostic Doctor');
 console.log('======================================================\n');
 
 let issues = 0;

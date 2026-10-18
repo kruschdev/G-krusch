@@ -1,6 +1,7 @@
 <p align="center">
   <h1 align="center">☁️ G-Krusch — Sovereign Google Workspace Hub & MCP Bridge</h1>
   <p align="center">
+    <em>Pronounced <strong>"G-Crush"</strong> (<code>/dʒiː krʌʃ/</code>)</em><br>
     <strong>Google Drive RAG, Cloud-Synced <code>agent.md</code> Steering, Calendar & Gmail Extensions for AI Agents</strong><br>
     <em>Powers autonomous IDE agents (via MCP) and <a href="https://github.com/kruschdev/krusch-companion">Krusch Companion</a>'s <code>&lt;holodata&gt;</code> Agentic Proxy (via REST on <code>:5446</code>).</em>
   </p>
@@ -10,7 +11,7 @@
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-green.svg?style=flat-square" alt="Node.js"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
   <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
-  <img src="https://img.shields.io/badge/tests-29%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
+  <img src="https://img.shields.io/badge/tests-30%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
   <a href="https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme"><img src="https://m8ven.ai/badge/mcp/kruschdev/g-krusch" alt="M8ven Score"></a>
 </p>

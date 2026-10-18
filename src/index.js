@@ -142,7 +142,7 @@ if (isStdio) {
   const bindHost = config.host || '127.0.0.1';
   const server = app.listen(config.port, bindHost, () => {
     console.log(`\n======================================================`);
-    console.log(`🚀 G-Krusch (G-Crush) Hub running at: http://${bindHost}:${config.port}`);
+    console.log(`🚀 G-Krusch Hub running at: http://${bindHost}:${config.port}`);
     console.log(`📡 MCP SSE Transport active at: http://${bindHost}:${config.port}/mcp/sse`);
     console.log(`🔐 Google OAuth Endpoint: http://${bindHost}:${config.port}/auth/google`);
     console.log(`🛡️ Process hardening & SSE keepalives initialized`);
