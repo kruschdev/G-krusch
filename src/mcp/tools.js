@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getAgentSteering } from '../lib/steering.js';
 import { searchDriveRag, syncDriveRag } from '../lib/rag.js';
 import { readDriveFile, writeDriveFile, deleteDriveFile, listWorkspaceTree, resolvePathToId, getDriveOverview } from '../lib/drive.js';
@@ -6,6 +7,15 @@ import { listCalendarEvents, createCalendarEvent, searchGmailMessages, createOrS
 import { getAuthStatus } from '../lib/oauth.js';
 import { getDb } from '../lib/db.js';
 import config from '../config.js';
+
+export function createMcpServer() {
+  const server = new McpServer({
+    name: 'g-krusch',
+    version: '1.0.0'
+  });
+  registerMcpTools(server);
+  return server;
+}
 
 export function registerMcpTools(mcpServer) {
 

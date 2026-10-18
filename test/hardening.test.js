@@ -21,9 +21,15 @@ import {
 } from '../src/lib/rag.js';
 import { getDb, getCachedEmbedding, saveCachedEmbedding, ensureFtsSync } from '../src/lib/db.js';
 import { invalidateSteeringCache } from '../src/lib/steering.js';
-import { parsePdfFile, parsePdfBuffer, sanitizePdfTempName } from '../src/lib/pdf.js';
+import {
+  parsePdfFile,
+  parsePdfBuffer,
+  sanitizePdfTempName,
+  validatePdfMagicBytes,
+  extractPdfTextNative
+} from '../src/lib/pdf.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { registerMcpTools } from '../src/mcp/tools.js';
+import { registerMcpTools, createMcpServer } from '../src/mcp/tools.js';
 import { encodeRawEmail, validateEmailAddress, encodeMimeSubject, createCalendarEvent } from '../src/lib/extensions.js';
 import {
   isTimingSafeMatch,
@@ -190,12 +196,24 @@ test('Hardening: MCP server exposes 12 comprehensive Google Workspace tools (Dri
 });
 
 test('Hardening: PDF Parsing Engine parses PDF with page citations and headers', async () => {
-  const fixturePath = '/home/krusch/homelab/projects/krusch-nexus/tests/fixtures/sample_contract.pdf';
+  // Always verify native/synthetic PDF extraction so CI environments without krusch-nexus still test PDF parsing
+  const syntheticPdf = Buffer.from(
+    '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+    '4 0 obj\n<< /Length 55 >>\nstream\nBT /F1 12 Tf 72 720 Td (COMMERCIAL LEASE AGREEMENT) Tj ET\nendstream\nendobj\n%%EOF',
+    'latin1'
+  );
+  const nativeRes = extractPdfTextNative(syntheticPdf, 'synthetic_lease.pdf');
+  assert.ok(nativeRes, 'Native PDF extractor must parse synthetic PDF stream');
+  assert.equal(nativeRes.engine, 'native');
+  assert.ok(nativeRes.chunks[0].citation.includes('synthetic_lease.pdf p.1'));
+  assert.ok(nativeRes.text.includes('COMMERCIAL LEASE AGREEMENT'));
+
+  const fixturePath = path.resolve(config.rootDir, '..', 'krusch-nexus', 'tests', 'fixtures', 'sample_contract.pdf');
   if (!fs.existsSync(fixturePath)) {
     return;
   }
   const fileResult = await parsePdfFile(fixturePath, 'sample_contract.pdf');
-  assert.ok(['nexus', 'pdftotext'].includes(fileResult.engine), 'Must use valid PDF engine');
+  assert.ok(['nexus', 'pdftotext', 'native'].includes(fileResult.engine), 'Must use valid PDF engine');
   assert.ok(fileResult.chunks.length > 0, 'Must extract at least one chunk');
   assert.ok(fileResult.chunks[0].citation.includes('sample_contract.pdf p.1'), 'Chunk must contain page citation');
   assert.ok(fileResult.text.includes('COMMERCIAL LEASE AGREEMENT'), 'Text must contain content');
@@ -460,7 +478,54 @@ test('Hardening: HTTP Security Headers and Sliding-Window Rate Limiter (INV-11)'
   assert.ok(Number(headers['Retry-After']) >= 1);
 });
 
+test('Hardening: Pre-spool PDF magic-byte security gate, per-session MCP SSE isolation, and zero hardcoded paths (INV-09 & INV-12)', async () => {
+  // 1. Pre-spool magic-byte validation rejects disguised executables and HTML
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from('MZ\x90\x00\x03\x00\x00\x00')),
+    /Windows PE executable/
+  );
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from('\x7fELF\x02\x01\x01\x00')),
+    /ELF binary/
+  );
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from('<!DOCTYPE html><html><script>evil()</script></html>')),
+    /HTML\/script payload/
+  );
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from('NOT_A_PDF_HEADER')),
+    /missing %PDF- magic header/
+  );
+  assert.equal(validatePdfMagicBytes(Buffer.from('%PDF-1.7\n%%EOF')), true);
 
+  // 2. Per-session MCP server factory creates isolated instances with all 12 tools
+  const s1 = createMcpServer();
+  const s2 = createMcpServer();
+  assert.notEqual(s1, s2, 'Each SSE connection must receive an isolated McpServer instance');
+  assert.equal(Object.keys(s1._registeredTools || {}).length, 12);
+  assert.equal(Object.keys(s2._registeredTools || {}).length, 12);
 
+  // 3. Unified steering mutex key and zero hardcoded host paths
+  const steeringSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/steering.js'), 'utf-8');
+  assert.ok(steeringSrc.includes("const STEERING_MUTEX_KEY = 'agent_md_steering'"), 'Steering read/write must share unified mutex key');
+  assert.ok(!steeringSrc.includes('agent_md_read'), 'Legacy split read mutex key must be removed');
+  assert.ok(!steeringSrc.includes('agent_md_write'), 'Legacy split write mutex key must be removed');
 
+  const forbiddenPrefix = ['', 'home', 'krusch'].join('/');
+  const filesToAudit = [
+    'src/config.js',
+    'src/index.js',
+    'src/lib/pdf.js',
+    'src/lib/steering.js',
+    'src/lib/drive.js',
+    'src/lib/rag.js',
+    'src/lib/oauth.js',
+    'client/index.html',
+    'spec.md'
+  ];
+  for (const rel of filesToAudit) {
+    const content = await fsp.readFile(path.join(config.rootDir, rel), 'utf-8');
+    assert.ok(!content.includes(forbiddenPrefix), `File ${rel} must not contain hardcoded host path`);
+  }
+});
 

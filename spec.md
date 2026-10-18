@@ -1,6 +1,6 @@
 # G-Krusch (G-Crush) Enterprise Security & Reliability Hardening Specification
 
-- **Project**: `g-krusch` (`/home/krusch/homelab/projects/g-krusch`)
+- **Project**: `g-krusch` (`projects/g-krusch`)
 - **Protocol**: L0 Specification-First Refactor (`/spec-first-refactor`, arXiv: 2608.12440)
 - **Date**: 2026-10-18
 - **STATUS**: FROZEN
@@ -43,8 +43,10 @@
 ### INV-08: Multi-Process SQLite Lock Resilience (`busy_timeout` & `synchronous`)
 1. `getDb()` in `src/lib/db.js` MUST set `db.pragma('busy_timeout = 5000')` and `db.pragma('synchronous = NORMAL')` alongside `journal_mode = WAL` so concurrent Express (`:5446`) and `--stdio` MCP processes never fail with immediate `SQLITE_BUSY` errors.
 
-### INV-09: PDF Temp File Path Traversal & CLI Argument Injection Guard
-1. `parsePdfBuffer` in `src/lib/pdf.js` MUST sanitize the temporary filename via `sanitizePdfTempName(filename)` (stripping directory components with `path.basename`, replacing non-`[a-zA-Z0-9._-]` characters, and prefixing leading `-` characters) before writing to `tempDir` or invoking `pdftotext` / `krusch_nexus.cli`.
+### INV-09: PDF Temp File Path Traversal, CLI Argument Injection & Pre-Spool Magic-Byte Gate
+1. `parsePdfBuffer` in `src/lib/pdf.js` MUST validate PDF magic bytes (`%PDF-`) via `validatePdfMagicBytes(buffer)` BEFORE writing any temporary file to `os.tmpdir()` or spawning external parser processes, rejecting disguised executables (`MZ`, `\x7fELF`, Mach-O) or HTML payloads.
+2. `parsePdfBuffer` MUST sanitize the temporary filename via `sanitizePdfTempName(filename)` (stripping directory components with `path.basename`, replacing non-`[a-zA-Z0-9._-]` characters, and prefixing leading `-` characters) before writing to `tempDir` or invoking `pdftotext` / `krusch_nexus.cli`.
+3. `src/lib/pdf.js` MUST include a Tier 3 pure-JS PDF stream text extractor fallback (`extractPdfTextNative`) so PDF buffers can be parsed even in bare CI environments where neither `krusch-nexus` nor `pdftotext` is installed.
 
 ### INV-10: Bounded Embedding Network Timeouts & Offline Hermetic Test Mode
 1. `generateEmbedding` in `src/lib/rag.js` MUST attach `AbortSignal.timeout(8000)` to Gemini embedding requests and `AbortSignal.timeout(5000)` to Ollama embedding requests so stalled sockets never hang the RAG mutex.
@@ -53,6 +55,11 @@
 ### INV-11: HTTP Security Headers, Sliding-Window Rate Limiter & Dependency Hygiene
 1. `src/lib/auth-guard.js` MUST export `securityHeadersMiddleware` (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`) and `createRateLimiter({ windowMs, maxRequests })` (returning HTTP `429` with `Retry-After` header when exceeded), mounted in `src/index.js`.
 2. Unused third-party dependencies (`pg`) MUST be removed from `package.json`.
+
+### INV-12: Zero Hardcoded Host Paths, Per-Session MCP SSE Server Isolation & Unified Steering Mutex
+1. Repository source, tests, client HTML/JS, and documentation MUST contain zero hardcoded host home paths, resolving sibling monorepo directories dynamically via `config.rootDir`.
+2. `src/mcp/tools.js` MUST export `createMcpServer()` so each concurrent `/mcp/sse` connection receives an isolated `McpServer` instance instead of throwing `Already connected to a transport` on concurrent SSE connections.
+3. `getAgentSteering` and `updateAgentSteering` in `src/lib/steering.js` MUST share a single mutex key (`'agent_md_steering'`) and escape `rootId` with `escapeDriveQueryLiteral` so concurrent reads and writes to `agent.md` never race.
 
 ---
 

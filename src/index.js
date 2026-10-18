@@ -12,7 +12,6 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -25,24 +24,15 @@ import {
   securityHeadersMiddleware,
   createRateLimiter
 } from './lib/auth-guard.js';
-import { registerMcpTools } from './mcp/tools.js';
+import { createMcpServer } from './mcp/tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isStdio = process.argv.includes('--stdio');
 
-// ── MCP Server Instance ──────────────────────────────────────────
-
-const mcpServer = new McpServer({
-  name: 'g-krusch',
-  version: '1.0.0'
-});
-
-// Register all agentic Google Drive tools
-registerMcpTools(mcpServer);
-
 if (isStdio) {
   // Stdio transport for direct CLI/IDE subprocess runner
+  const mcpServer = createMcpServer();
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
   console.error('[G-Krusch] MCP Server running on Stdio transport');
@@ -69,7 +59,7 @@ if (isStdio) {
 
   // ── MCP SSE Transport with Heartbeat Guard ─────────────────────
 
-  /** @type {Map<string, { transport: SSEServerTransport, res: express.Response }>} */
+  /** @type {Map<string, { transport: SSEServerTransport, res: express.Response, server: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer }>} */
   const transports = new Map();
   const MAX_CONCURRENT_TRANSPORTS = 50;
 
@@ -80,9 +70,11 @@ if (isStdio) {
         if (!entry.res.writableEnded) {
           entry.res.write(':keepalive\n\n');
         } else {
+          try { entry.server?.close?.(); } catch {}
           transports.delete(id);
         }
       } catch {
+        try { entry.server?.close?.(); } catch {}
         transports.delete(id);
       }
     }
@@ -99,17 +91,20 @@ if (isStdio) {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
+    const sessionServer = createMcpServer();
     const transport = new SSEServerTransport('/mcp/messages', res);
-    transports.set(transport.sessionId, { transport, res });
+    transports.set(transport.sessionId, { transport, res, server: sessionServer });
 
     res.on('close', () => {
+      try { sessionServer.close?.(); } catch {}
       transports.delete(transport.sessionId);
     });
 
     try {
-      await mcpServer.connect(transport);
+      await sessionServer.connect(transport);
     } catch (err) {
       console.warn('[MCP SSE Connect Error]:', err.message);
+      try { sessionServer.close?.(); } catch {}
       transports.delete(transport.sessionId);
     }
   });
@@ -178,6 +173,7 @@ if (isStdio) {
     clearInterval(heartbeatTimer);
 
     for (const [id, entry] of transports) {
+      try { entry.server?.close?.(); } catch {}
       try { entry.transport.close?.(); } catch {}
       transports.delete(id);
     }

@@ -3,9 +3,11 @@ import { getDrive, getOrCreateWorkspaceFolder, readDriveFile, writeDriveFile } f
 import { getDb } from './db.js';
 import { mutex } from './mutex.js';
 import { withRetry } from './retry.js';
+import { escapeDriveQueryLiteral } from './path-utils.js';
 
 const MAX_STEERING_BYTES = 500 * 1024; // 500KB cap
 const STEERING_CACHE_TTL_MS = 30000; // 30s in-memory TTL
+const STEERING_MUTEX_KEY = 'agent_md_steering';
 
 let memorySteeringCache = null;
 let memorySteeringCacheTime = 0;
@@ -52,7 +54,7 @@ export async function getAgentSteering(options = { forceRefresh: false }) {
     return memorySteeringCache;
   }
 
-  return mutex.runExclusive('agent_md_read', async () => {
+  return mutex.runExclusive(STEERING_MUTEX_KEY, async () => {
     if (!options.forceRefresh && memorySteeringCache && (Date.now() - memorySteeringCacheTime < STEERING_CACHE_TTL_MS)) {
       return memorySteeringCache;
     }
@@ -64,7 +66,7 @@ export async function getAgentSteering(options = { forceRefresh: false }) {
       const rootId = await getOrCreateWorkspaceFolder();
       const drive = await getDrive();
 
-      const q = `'${rootId}' in parents and (name = 'agent.md' or name = 'AGENTS.md') and trashed = false`;
+      const q = `'${escapeDriveQueryLiteral(rootId)}' in parents and (name = 'agent.md' or name = 'AGENTS.md') and trashed = false`;
       const res = await withRetry(() => drive.files.list({
         q,
         fields: 'files(id, name, mimeType, modifiedTime, webViewLink)'
@@ -181,7 +183,7 @@ export async function updateAgentSteering(newContent) {
 
   const sanitized = newContent.slice(0, MAX_STEERING_BYTES);
 
-  return mutex.runExclusive('agent_md_write', async () => {
+  return mutex.runExclusive(STEERING_MUTEX_KEY, async () => {
     const writeResult = await writeDriveFile({
       path: 'agent.md',
       content: sanitized,
