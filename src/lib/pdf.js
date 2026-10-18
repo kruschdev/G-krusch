@@ -221,7 +221,7 @@ export async function parsePdfFile(filePath, filename, options = {}) {
     try {
       const { stdout } = await execFileAsync(
         pdftotextBin,
-        ['-layout', filePath, '-'],
+        ['-layout', '--', filePath, '-'],
         { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }
       );
 

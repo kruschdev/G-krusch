@@ -6,9 +6,19 @@ import { isTimingSafeMatch } from './auth-guard.js';
 import { mutex } from './mutex.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_PENDING_OAUTH_STATES = 32;
 let cachedClient = null;
 let cachedTokensHash = null;
-let pendingOAuthState = null;
+/** @type {Map<string, number>} */
+const pendingOAuthStates = new Map();
+
+function pruneExpiredOAuthStates(now = Date.now()) {
+  for (const [token, expiresAt] of pendingOAuthStates) {
+    if (now > expiresAt) {
+      pendingOAuthStates.delete(token);
+    }
+  }
+}
 
 export function resetOAuthClientCache() {
   cachedClient = null;
@@ -16,37 +26,40 @@ export function resetOAuthClientCache() {
 }
 
 export function generateOAuthState() {
+  const now = Date.now();
+  pruneExpiredOAuthStates(now);
+  while (pendingOAuthStates.size >= MAX_PENDING_OAUTH_STATES) {
+    const oldestKey = pendingOAuthStates.keys().next().value;
+    if (!oldestKey) break;
+    pendingOAuthStates.delete(oldestKey);
+  }
   const state = crypto.randomBytes(32).toString('hex');
-  pendingOAuthState = {
-    state,
-    expiresAt: Date.now() + OAUTH_STATE_TTL_MS
-  };
+  pendingOAuthStates.set(state, now + OAUTH_STATE_TTL_MS);
   return state;
 }
 
 export function hasPendingOAuthState() {
-  if (!pendingOAuthState) return false;
-  if (Date.now() > pendingOAuthState.expiresAt) {
-    pendingOAuthState = null;
-    return false;
-  }
-  return true;
+  pruneExpiredOAuthStates();
+  return pendingOAuthStates.size > 0;
 }
 
 export function verifyOAuthState(candidateState) {
-  if (!pendingOAuthState) {
+  pruneExpiredOAuthStates();
+  if (pendingOAuthStates.size === 0) {
     return false;
   }
-  const { state, expiresAt } = pendingOAuthState;
-  if (Date.now() > expiresAt) {
-    pendingOAuthState = null;
-    return false;
+  const candidate = String(candidateState || '');
+  let matchedKey = null;
+  for (const state of pendingOAuthStates.keys()) {
+    if (isTimingSafeMatch(candidate, state)) {
+      matchedKey = state;
+    }
   }
-  const matched = isTimingSafeMatch(String(candidateState || ''), state);
-  if (matched) {
-    pendingOAuthState = null;
+  if (matchedKey) {
+    pendingOAuthStates.delete(matchedKey);
+    return true;
   }
-  return matched;
+  return false;
 }
 
 export function createOAuth2Client() {

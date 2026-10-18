@@ -158,6 +158,21 @@ export function deleteCredentials(id = 'google_oauth') {
   db.prepare('DELETE FROM credentials WHERE id = ?').run(id);
 }
 
+/**
+ * Atomically clears OAuth credentials, cached workspace_root_id, and agent_steering_cache
+ * when disconnecting a Google Workspace account.
+ */
+export function clearWorkspaceSessionState(id = 'google_oauth') {
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM credentials WHERE id = ?').run(id);
+    db.prepare("DELETE FROM workspace_metadata WHERE key = 'workspace_root_id'").run();
+    db.prepare('DELETE FROM agent_steering_cache').run();
+    bumpSteeringCacheEpoch();
+  });
+  tx();
+}
+
 export function setMetadata(key, value) {
   const db = getDb();
   const stmt = db.prepare(`

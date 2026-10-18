@@ -25,7 +25,12 @@ import {
   saveCachedEmbedding,
   ensureFtsSync,
   purgeIndexedDocumentTransactional,
-  getSteeringCacheEpoch
+  getSteeringCacheEpoch,
+  clearWorkspaceSessionState,
+  saveCredentials,
+  getCredentials,
+  setMetadata,
+  getMetadata
 } from '../src/lib/db.js';
 import { invalidateSteeringCache } from '../src/lib/steering.js';
 import {
@@ -585,5 +590,24 @@ test('Hardening: Transactional RAG/FTS5 purge on file deletion and readDriveFile
   const driveSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/drive.js'), 'utf-8');
   assert.ok(driveSrc.includes('Refusing to read file outside the G-Krusch workspace boundary.'), 'readDriveFile must enforce workspace boundary when enforceWorkspace is true');
   assert.ok(driveSrc.includes('purgeIndexedDocumentTransactional(targetId)'), 'deleteDriveFile must atomically purge local RAG/FTS5 index');
+
+  // Multi-tab OAuth state verification
+  const stateTab1 = generateOAuthState();
+  const stateTab2 = generateOAuthState();
+  assert.notEqual(stateTab1, stateTab2);
+  assert.equal(verifyOAuthState(stateTab1), true, 'First tab state must remain valid even after second tab generates a state');
+  assert.equal(verifyOAuthState(stateTab1), false, 'Consumed tab 1 state must not be reusable');
+  assert.equal(verifyOAuthState(stateTab2), true, 'Second tab state must also verify cleanly');
+
+  // Disconnect session cleanup
+  saveCredentials('google_oauth', { access_token: 'tok_disconnect_test' }, 'user@example.com');
+  setMetadata('workspace_root_id', 'folder_old_account');
+  clearWorkspaceSessionState('google_oauth');
+  assert.equal(getCredentials('google_oauth'), null, 'Credentials must be cleared on disconnect');
+  assert.equal(getMetadata('workspace_root_id'), null, 'Cached workspace_root_id must be cleared on disconnect');
+
+  const pdfSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/pdf.js'), 'utf-8');
+  assert.ok(pdfSrc.includes("['-layout', '--', filePath, '-']"), 'pdftotext must receive -- end-of-options separator before filePath');
 });
+
 

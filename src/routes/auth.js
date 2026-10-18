@@ -7,8 +7,8 @@ import {
   hasPendingOAuthState,
   verifyOAuthState
 } from '../lib/oauth.js';
-import { getAgentSteering } from '../lib/steering.js';
-import { deleteCredentials } from '../lib/db.js';
+import { getAgentSteering, invalidateSteeringCache } from '../lib/steering.js';
+import { clearWorkspaceSessionState } from '../lib/db.js';
 import { requireAuthIfConfigured } from '../lib/auth-guard.js';
 import config from '../config.js';
 
@@ -136,7 +136,8 @@ router.get('/status', (req, res) => {
 
 // Disconnect
 router.post('/disconnect', requireAuthIfConfigured, (req, res) => {
-  deleteCredentials('google_oauth');
+  clearWorkspaceSessionState('google_oauth');
+  invalidateSteeringCache();
   resetOAuthClientCache();
   res.json({ success: true, message: 'Google Workspace disconnected.' });
 });
