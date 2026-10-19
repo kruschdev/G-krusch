@@ -1,6 +1,5 @@
 # G-Krusch — Technical Context & Invariant Registry
 
-> **Pronunciation**: *G-Crush* (`/dʒiː krʌʃ/`)
 > **Repository**: `projects/g-krusch` (symlinked at `projects/g-crush`, remote `github.com/kruschdev/G-krusch`)
 > **Runtime**: Node.js $\ge 22.0.0$ (ESM), Express 4, `better-sqlite3` (WAL + FTS5), `@modelcontextprotocol/sdk`
 > **Port / Service**: `127.0.0.1:5446` (`g-krusch.service`)

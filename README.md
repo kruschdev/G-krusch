@@ -1,7 +1,6 @@
 <p align="center">
   <h1 align="center">☁️ G-Krusch — Sovereign Google Workspace Hub & MCP Bridge</h1>
   <p align="center">
-    <em>Pronounced <strong>"G-Crush"</strong> (<code>/dʒiː krʌʃ/</code>)</em><br>
     <strong>Google Drive RAG, Cloud-Synced <code>agent.md</code> Steering, Calendar & Gmail Extensions for AI Agents</strong><br>
     <em>Powers autonomous IDE agents (via MCP) and <a href="https://github.com/kruschdev/krusch-companion">Krusch Companion</a>'s <code>&lt;holodata&gt;</code> Agentic Proxy (via REST on <code>:5446</code>).</em>
   </p>
