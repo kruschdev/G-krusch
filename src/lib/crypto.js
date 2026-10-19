@@ -14,7 +14,11 @@ const AUTH_TAG_LENGTH = 16;
  * Derives a consistent 32-byte key from the configured secret or a fallback.
  */
 function getDerivedKey() {
-  const secret = process.env.ENCRYPTION_KEY || config.google.clientSecret || 'g-krusch-homelab-secure-fallback-key-2026';
+  const secret =
+    process.env.ENCRYPTION_KEY ||
+    process.env.GCRUSH_SECRET ||
+    config.google.clientSecret ||
+    'g-krusch-homelab-secure-fallback-key-2026';
   return crypto.createHash('sha256').update(secret).digest();
 }
 
@@ -49,7 +53,7 @@ export function decrypt(encryptedText) {
 
   const parts = encryptedText.split(':');
   if (parts.length !== 3) {
-    return encryptedText;
+    throw new Error('Invalid AES-256-GCM ciphertext format: expected iv:tag:ciphertext.');
   }
 
   const [ivHex, tagHex, cipherHex] = parts;

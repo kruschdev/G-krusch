@@ -329,7 +329,7 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
     }
 
     // Check if file already exists in target parent
-    const q = `'${escapeDriveQueryLiteral(targetParentId)}' in parents and name = '${escapeDriveQueryLiteral(fileName)}' and trashed = false`;
+    const q = `'${escapeDriveQueryLiteral(targetParentId)}' in parents and name = '${escapeDriveQueryLiteral(fileName)}' and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
     const existingRes = await withRetry(() => drive.files.list({
       q,
       fields: 'files(id, name, mimeType)'

@@ -80,7 +80,7 @@ if (isStdio) {
     }
   }, 15000);
 
-  app.get('/mcp/sse', requireAuthIfConfigured, async (req, res) => {
+  app.get('/mcp/sse', apiLimiter, requireAuthIfConfigured, async (req, res) => {
     if (transports.size >= MAX_CONCURRENT_TRANSPORTS) {
       return res.status(429).json({ error: 'Max concurrent MCP SSE connections reached.' });
     }
@@ -109,13 +109,13 @@ if (isStdio) {
     }
   });
 
-  app.post('/mcp/messages', requireAuthIfConfigured, async (req, res) => {
+  app.post('/mcp/messages', apiLimiter, requireAuthIfConfigured, async (req, res) => {
     const sessionId = req.query.sessionId;
     const entry = transports.get(sessionId);
 
     if (entry && entry.transport) {
       try {
-        await entry.transport.handlePostMessage(req, res);
+        await entry.transport.handlePostMessage(req, res, req.body);
       } catch (err) {
         console.error('[MCP Transport Message Error]:', err.message);
         if (!res.headersSent) {

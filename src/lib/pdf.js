@@ -46,18 +46,31 @@ export function validatePdfMagicBytes(buffer) {
   }
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
 
-  // Explicit blocklist for executable / HTML masquerading
+  // Explicit blocklist for executable / HTML masquerading (PE, ELF, Mach-O)
   if (buf[0] === 0x4d && buf[1] === 0x5a) {
     throw new Error('Security violation: Windows PE executable (MZ) disguised as PDF rejected before spooling.');
   }
   if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
     throw new Error('Security violation: ELF binary disguised as PDF rejected before spooling.');
   }
+  if (buf.length >= 4) {
+    const magic32 = buf.readUInt32BE(0);
+    if (
+      magic32 === 0xfeedface ||
+      magic32 === 0xfeedfacf ||
+      magic32 === 0xcefaedfe ||
+      magic32 === 0xcffaedfe ||
+      magic32 === 0xcafebabe
+    ) {
+      throw new Error('Security violation: Mach-O binary disguised as PDF rejected before spooling.');
+    }
+  }
   const headerSlice = buf.subarray(0, Math.min(buf.length, 1024)).toString('latin1');
-  if (/^\s*<(!DOCTYPE|html|script)/i.test(headerSlice)) {
+  if (/^\s*<(!DOCTYPE|html|head|body|script|svg|iframe)/i.test(headerSlice)) {
     throw new Error('Security violation: HTML/script payload disguised as PDF rejected before spooling.');
   }
-  if (!headerSlice.includes('%PDF-')) {
+  const pdfIndex = headerSlice.indexOf('%PDF-');
+  if (pdfIndex === -1 || pdfIndex > 16 || !/^[\s\xef\xbb\xbf]*%PDF-/.test(headerSlice)) {
     throw new Error('Invalid PDF payload: missing %PDF- magic header.');
   }
   return true;

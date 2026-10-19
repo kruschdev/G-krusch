@@ -82,6 +82,9 @@ async function setupAuth() {
       } else if (hData.pdf.engine === 'pdftotext') {
         pdfBadge.className = 'status-badge online';
         pdfText.textContent = 'Poppler PDF Active';
+      } else if (hData.pdf.engine === 'native-js' || hData.pdf.engine === 'native') {
+        pdfBadge.className = 'status-badge online';
+        pdfText.textContent = 'Native PDF Ready';
       } else {
         pdfBadge.className = 'status-badge disconnected';
         pdfText.textContent = 'PDF Engine Offline';

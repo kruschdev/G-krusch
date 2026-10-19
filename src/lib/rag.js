@@ -331,7 +331,7 @@ export function saveIndexedDocumentTransactional({
   writeTx();
 }
 
-async function indexSingleFile(file, relativePath) {
+export async function indexSingleFile(file, relativePath) {
   // Filter out binary / media files
   if (!isIndexableMimeType(file.mimeType)) {
     return { updated: false, chunks: 0 };
@@ -341,8 +341,20 @@ async function indexSingleFile(file, relativePath) {
   const existing = db.prepare('SELECT modified_time FROM rag_documents WHERE file_id = ?').get(file.id);
 
   if (existing && existing.modified_time === file.modifiedTime) {
-    const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks WHERE file_id = ?').get(file.id);
-    return { updated: false, chunks: chunkCount?.count || 0 };
+    const chunkRows = db.prepare('SELECT embedding FROM rag_chunks WHERE file_id = ?').all(file.id);
+    const useLiveProviders = !config.isTestRuntime || process.env.GCRUSH_TEST_LIVE_EMBEDDINGS === 'true';
+    const hasLowDimChunks = useLiveProviders && chunkRows.some(row => {
+      try {
+        const parsed = JSON.parse(row.embedding || '[]');
+        return !Array.isArray(parsed) || parsed.length < 256;
+      } catch {
+        return true;
+      }
+    });
+
+    if (chunkRows.length > 0 && !hasLowDimChunks) {
+      return { updated: false, chunks: chunkRows.length };
+    }
   }
 
   try {

@@ -78,7 +78,7 @@ export async function getAgentSteering(options = { forceRefresh: false }) {
       const rootId = await getOrCreateWorkspaceFolder();
       const drive = await getDrive();
 
-      const q = `'${escapeDriveQueryLiteral(rootId)}' in parents and (name = 'agent.md' or name = 'AGENTS.md') and trashed = false`;
+      const q = `'${escapeDriveQueryLiteral(rootId)}' in parents and (name = 'agent.md' or name = 'AGENTS.md') and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
       const res = await withRetry(() => drive.files.list({
         q,
         fields: 'files(id, name, mimeType, modifiedTime, webViewLink)'

@@ -41,8 +41,8 @@ export async function oauthCallbackHandler(req, res) {
     return res.status(400).send('Authorization code missing.');
   }
 
-  // Enforce CSRF state check whenever a state was issued or supplied
-  if ((hasPendingOAuthState() || state !== undefined) && !verifyOAuthState(String(state || ''))) {
+  // Enforce CSRF state check on all OAuth callbacks (closing missing-state CSRF gap)
+  if ((hasPendingOAuthState() || state !== undefined || !config.isTestRuntime || process.env.NODE_ENV === 'production' || !state) && !verifyOAuthState(String(state || ''))) {
     return res.status(403).send('<h3>OAuth Security Error</h3><p>Invalid or expired OAuth state parameter.</p>');
   }
 

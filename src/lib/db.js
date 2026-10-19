@@ -102,13 +102,15 @@ export function ensureFtsSync(db = getDb()) {
     const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
     const ftsCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks_fts').get()?.count || 0;
 
-    if (chunkCount > 0 && ftsCount !== chunkCount) {
+    if (ftsCount !== chunkCount) {
       const rebuildTx = db.transaction(() => {
         db.prepare('DELETE FROM rag_chunks_fts').run();
-        db.prepare(`
-          INSERT INTO rag_chunks_fts (content, file_id, chunk_index)
-          SELECT content, file_id, chunk_index FROM rag_chunks
-        `).run();
+        if (chunkCount > 0) {
+          db.prepare(`
+            INSERT INTO rag_chunks_fts (content, file_id, chunk_index)
+            SELECT content, file_id, chunk_index FROM rag_chunks
+          `).run();
+        }
       });
       rebuildTx();
       return { healed: true, restoredChunks: chunkCount };
@@ -239,7 +241,9 @@ export function saveCachedEmbedding(textHash, embedding) {
   db.prepare(`
     INSERT INTO rag_embeddings_cache (text_hash, embedding, created_at)
     VALUES (?, ?, datetime('now'))
-    ON CONFLICT(text_hash) DO NOTHING
+    ON CONFLICT(text_hash) DO UPDATE SET
+      embedding = excluded.embedding,
+      created_at = datetime('now')
   `).run(textHash, serialized);
 }
 

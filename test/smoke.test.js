@@ -9,6 +9,8 @@ import { withRetry } from '../src/lib/retry.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
 
+import { oauthCallbackHandler } from '../src/routes/auth.js';
+
 test('Crypto: AES-256-GCM encryption and decryption roundtrip', () => {
   const secretData = JSON.stringify({ access_token: 'ya29.test12345', refresh_token: '1//refresh' });
   const encrypted = encrypt(secretData);
@@ -21,6 +23,22 @@ test('Crypto: AES-256-GCM encryption and decryption roundtrip', () => {
 
   // Backwards compatibility with unencrypted JSON
   assert.equal(decrypt('{"legacy":true}'), '{"legacy":true}', 'Should pass unencrypted JSON through cleanly');
+
+  // Malformed ciphertext (parts.length !== 3) must throw
+  assert.throws(() => decrypt('malformed:ciphertext'), /Invalid AES-256-GCM ciphertext format/);
+});
+
+test('Auth: OAuth callback rejects missing or invalid CSRF state parameter (GKR-02)', async () => {
+  let statusCode = 200;
+  let bodySent = '';
+  const mockRes = {
+    status(c) { statusCode = c; return this; },
+    send(b) { bodySent = b; return this; }
+  };
+
+  await oauthCallbackHandler({ query: { code: 'auth_code_123' } }, mockRes);
+  assert.equal(statusCode, 403, 'Callback without state must be rejected with 403');
+  assert.ok(bodySent.includes('Invalid or expired OAuth state parameter'));
 });
 
 test('Security: sanitizeWorkspacePath prevents traversal and illegal characters', () => {

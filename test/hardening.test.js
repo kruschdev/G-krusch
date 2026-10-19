@@ -608,6 +608,57 @@ test('Hardening: Transactional RAG/FTS5 purge on file deletion and readDriveFile
 
   const pdfSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/pdf.js'), 'utf-8');
   assert.ok(pdfSrc.includes("['-layout', '--', filePath, '-']"), 'pdftotext must receive -- end-of-options separator before filePath');
+
+  // GKR-01 & GKR-07: MCP SSE rate limiting & parsed body forwarding
+  const indexSrc = await fsp.readFile(path.join(config.rootDir, 'src/index.js'), 'utf-8');
+  assert.ok(indexSrc.includes('handlePostMessage(req, res, req.body)'), 'POST /mcp/messages must pass req.body as 3rd argument (GKR-01)');
+  assert.ok(indexSrc.includes("app.get('/mcp/sse', apiLimiter"), 'GET /mcp/sse must mount apiLimiter (GKR-07)');
+  assert.ok(indexSrc.includes("app.post('/mcp/messages', apiLimiter"), 'POST /mcp/messages must mount apiLimiter (GKR-07)');
+
+  // GKR-03: saveCachedEmbedding overwrites stale low-dim embeddings with 1024-dim vectors
+  const upgradeHash = 'gkr03_upgrade_test_hash';
+  saveCachedEmbedding(upgradeHash, new Array(64).fill(0.1));
+  assert.equal(getCachedEmbedding(upgradeHash).length, 64);
+  saveCachedEmbedding(upgradeHash, new Array(1024).fill(0.2));
+  assert.equal(getCachedEmbedding(upgradeHash).length, 1024, 'saveCachedEmbedding must overwrite stale <256-dim vector on conflict (GKR-03)');
+
+  // GKR-05: Mach-O magic bytes, <svg/<body>/<iframe> HTML tags, and start-anchored %PDF-
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from([0xfe, 0xed, 0xfa, 0xcf, 0x00, 0x00])),
+    /Mach-O binary/
+  );
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00])),
+    /Mach-O binary/
+  );
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from('<svg onload="evil()">%PDF-1.4</svg>')),
+    /HTML\/script payload/
+  );
+  assert.throws(
+    () => validatePdfMagicBytes(Buffer.from('JUNK_PREFIX_NOT_PDF %PDF-1.4\n%%EOF')),
+    /missing %PDF- magic header/
+  );
+
+  // GKR-08: Exclude folders in writeDriveFile and getAgentSteering queries
+  assert.ok(
+    driveSrc.includes("mimeType != 'application/vnd.google-apps.folder'"),
+    'writeDriveFile lookup must exclude folders (GKR-08)'
+  );
+
+  // GKR-09: ensureFtsSync cleans orphaned FTS rows when chunkCount === 0
+  db.prepare('DELETE FROM rag_chunks').run();
+  db.prepare('DELETE FROM rag_chunks_fts').run();
+  db.prepare("INSERT INTO rag_chunks_fts (content, file_id, chunk_index) VALUES ('orphan chunk', 'orphan_id', 0)").run();
+  assert.equal(db.prepare('SELECT COUNT(*) as c FROM rag_chunks_fts').get().c, 1);
+  const orphanHeal = ensureFtsSync(db);
+  assert.equal(orphanHeal.healed, true, 'ensureFtsSync must heal orphaned FTS rows when chunkCount === 0 (GKR-09)');
+  assert.equal(db.prepare('SELECT COUNT(*) as c FROM rag_chunks_fts').get().c, 0);
+
+  // GKR-11: client/main.js recognizes native-js PDF engine as online
+  const clientSrc = await fsp.readFile(path.join(config.rootDir, 'client/main.js'), 'utf-8');
+  assert.ok(clientSrc.includes("hData.pdf.engine === 'native-js'"), 'Client must recognize native-js PDF engine as online (GKR-11)');
 });
+
 
 
