@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Sovereign Google Workspace Hub & MCP Server for AI Agents — Cloud-synced agent.md steering, hybrid Vector + FTS5 BM25 Drive RAG, page-faithful PDF parsing, and Google Docs, Calendar & Gmail extensions.",
   "main": "src/index.js",
+  "bin": {
+    "g-krusch": "./bin/g-krusch.js",
+    "g-krusch-doctor": "./bin/doctor.js"
+  },
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
