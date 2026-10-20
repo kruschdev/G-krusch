@@ -9,8 +9,9 @@
 <p align="center">
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-green.svg?style=flat-square" alt="Node.js"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-1.12%2B-blue.svg?style=flat-square" alt="MCP"></a>
+  <a href="https://hol.org/guard/extension-studio?extension=mcp.g-krusch"><img src="https://img.shields.io/badge/HOL_Guard-Catalog_Listed-0B0F17?style=flat-square&logo=shield&logoColor=00F5D4" alt="HOL Guard Catalog"></a>
   <a href="https://github.com/kruschdev/krusch-companion"><img src="https://img.shields.io/badge/Bridge-Krusch%20Companion-cyan.svg?style=flat-square" alt="Krusch Companion Bridge"></a>
-  <img src="https://img.shields.io/badge/tests-30%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
+  <img src="https://img.shields.io/badge/tests-32%20passed-brightgreen.svg?style=flat-square" alt="Tests Passed">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
   <a href="https://m8ven.ai/mcp/kruschdev/g-krusch?s=readme"><img src="https://m8ven.ai/badge/mcp/kruschdev/g-krusch" alt="M8ven Score"></a>
 </p>
@@ -25,7 +26,7 @@ Most AI agents are trapped either in ephemeral context windows or isolated local
 1. **`agent.md` Cloud-Synced Steering**: Edit your agent rules, project priorities, and personas from your phone, tablet, or web browser directly in Google Drive. When an agent boots, it dynamically pulls the latest instructions via `get_agent_steering` (`GET /api/steering`).
 2. **Sovereign 1,024-Dim Vector & FTS5 BM25 Drive RAG**: Queries your Google Docs, PDFs, notes, and specs using a 3-tier dense semantic embedding cascade (Tier 1: local GPU Ollama `bge-large:latest` 1,024-dim -> Tier 2: Gemini `models/gemini-embedding-001` at `outputDimensionality: 1024` -> Tier 3: uncached deterministic 64-dim offline fallback) fused with SQLite FTS5 Porter-stemmed BM25 keyword search.
 3. **3-Tier Page-Faithful PDF Extraction**: Validates `%PDF-` magic bytes prior to disk spooling (`validatePdfMagicBytes`) and extracts multi-page PDFs with page citations (`[contract.pdf p.1]`) via Tier 1 **Krusch-Nexus** (`pdftotext -bbox-layout`), Tier 2 system Poppler `pdftotext`, or Tier 3 pure-JS stream extraction (`extractPdfTextNative`).
-4. **Two-Way Agent Filesystem**: Agents can read project briefs from `context/`, check decision logs in `memory/`, and write deliverables directly into `output/` on Google Drive.
+4. **Two-Way Agent Filesystem + Native Google Docs, Sheets & Slides**: Agents can read project briefs from `context/`, check decision logs in `memory/`, and use `write_drive_file` to create or update Markdown files, styled **Google Docs** (`.gdoc`), **Google Sheets** (`.gsheet` from CSV or Markdown tables), and 16:9 **Google Slides** presentations (`.slides` from `---`-separated Markdown decks) directly in `output/`.
 5. **Google Calendar & Gmail Extensions**: Exposes hardened REST endpoints (`/api/calendar/events`, `/api/gmail/messages`, `/api/gmail/drafts`, `/api/gmail/send`) so **Krusch Companion** can check your schedule, book appointments, search your inbox, and compose RFC-2822 / RFC-2047 emails.
 
 ---
@@ -131,8 +132,8 @@ Endpoints:
 |------|-------------|
 | `get_agent_steering` | Retrieves active `agent.md` steering directives directly from Google Drive. |
 | `search_drive_rag` | Hybrid semantic vector + FTS5 BM25 keyword search across all indexed files in Google Drive. |
-| `read_drive_file` | Reads any document from Drive (exports Google Docs & PDFs cleanly to Markdown). |
-| `write_drive_file` | Writes or updates a file in the workspace (saves reports, notes, artifacts). |
+| `read_drive_file` | Reads any document from Drive (exports Google Docs, Sheets, Slides & PDFs cleanly to Markdown/CSV). |
+| `write_drive_file` | Creates or updates Markdown files, native **Google Docs** (`.gdoc`), **Google Sheets** (`.gsheet`), or **Google Slides** presentations (`.slides`) in the workspace. |
 | `delete_drive_file` | Soft-trashes a file in the G-Krusch Google Drive workspace. |
 | `list_drive_workspace`| Lists all folders and files in the G-Krusch Drive hierarchy. |
 | `sync_drive_rag` | Triggers an incremental scan and embedding sync of Google Drive files. |
