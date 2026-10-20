@@ -8,6 +8,17 @@ import { mutex } from '../src/lib/mutex.js';
 import { withRetry } from '../src/lib/retry.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from '../src/mcp/tools.js';
+import {
+  parseMarkdownSlides,
+  buildPptxBuffer,
+  markdownToGoogleDocHtml,
+  markdownTableOrTextToCsv,
+  prepareWorkspaceWritePayload,
+  GOOGLE_SLIDES_MIME,
+  GOOGLE_DOCS_MIME,
+  GOOGLE_SHEETS_MIME,
+  PPTX_MIME
+} from '../src/lib/slides.js';
 
 import { oauthCallbackHandler } from '../src/routes/auth.js';
 
@@ -156,5 +167,67 @@ test('RAG: mime filtering and deterministic embeddings', async () => {
 test('MCP: tools register properly on McpServer', () => {
   const server = new McpServer({ name: 'test-server', version: '1.0.0' });
   registerMcpTools(server);
-  assert.ok(server, 'Server should register all 6 tools without throwing');
+  assert.ok(server, 'Server should register all tools without throwing');
 });
+
+test('Workspace Formats: Google Slides, Docs, and Sheets payload builders', () => {
+  const deckMd = `
+# Q4 Architecture Review
+- Zero-trust MCP boundaries
+- Hybrid Vector + BM25 RAG
+---
+# Fleet Topology
+- krusch: Central Orchestrator
+- kruschdev: 30B MoE Compute
+  `.trim();
+
+  const slides = parseMarkdownSlides(deckMd, 'Architecture');
+  assert.equal(slides.length, 2);
+  assert.equal(slides[0].title, 'Q4 Architecture Review');
+  assert.deepEqual(slides[0].bullets, ['Zero-trust MCP boundaries', 'Hybrid Vector + BM25 RAG']);
+
+  const pptxBuf = buildPptxBuffer(slides);
+  assert.equal(pptxBuf.readUInt32LE(0), 0x04034b50, 'PPTX buffer must start with PK ZIP local header signature');
+
+  const slidesPayload = prepareWorkspaceWritePayload({
+    fileName: 'roadmap.slides',
+    content: deckMd,
+    mimeType: 'text/markdown'
+  });
+  assert.equal(slidesPayload.targetName, 'roadmap');
+  assert.equal(slidesPayload.targetMimeType, GOOGLE_SLIDES_MIME);
+  assert.equal(slidesPayload.uploadMimeType, PPTX_MIME);
+  assert.equal(slidesPayload.extraMeta.slidesCount, 2);
+
+  const docHtml = markdownToGoogleDocHtml('# Heading 1\n- Item A\n- **Bold Item**', 'My Spec');
+  assert.ok(docHtml.includes('<h1>Heading 1</h1>'));
+  assert.ok(docHtml.includes('<li><strong>Bold Item</strong></li>'));
+
+  const docPayload = prepareWorkspaceWritePayload({
+    fileName: 'spec.gdoc',
+    content: '# Spec\nHello world',
+    mimeType: 'docs'
+  });
+  assert.equal(docPayload.targetName, 'spec');
+  assert.equal(docPayload.targetMimeType, GOOGLE_DOCS_MIME);
+  assert.equal(docPayload.uploadMimeType, 'text/html');
+
+  const tableMd = `
+| Node | Role |
+|---|---|
+| krusch | Orchestrator, "Primary" |
+| kruschdev | Compute |
+  `.trim();
+  const csv = markdownTableOrTextToCsv(tableMd);
+  assert.equal(csv, 'Node,Role\r\nkrusch,"Orchestrator, ""Primary"""\r\nkruschdev,Compute');
+
+  const sheetPayload = prepareWorkspaceWritePayload({
+    fileName: 'fleet.gsheet',
+    content: tableMd,
+    mimeType: 'sheets'
+  });
+  assert.equal(sheetPayload.targetName, 'fleet');
+  assert.equal(sheetPayload.targetMimeType, GOOGLE_SHEETS_MIME);
+  assert.equal(sheetPayload.uploadMimeType, 'text/csv');
+});
+

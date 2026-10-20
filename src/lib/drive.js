@@ -7,6 +7,7 @@ import { withRetry } from './retry.js';
 import { mutex } from './mutex.js';
 import { sanitizeWorkspacePath, escapeDriveQueryLiteral, isValidDriveId } from './path-utils.js';
 import { parsePdfBuffer } from './pdf.js';
+import { prepareWorkspaceWritePayload } from './slides.js';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB safety cap
 const MAX_WRITE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB write cap
@@ -118,8 +119,12 @@ export async function resolvePathToId(relativePath, options = { createParents: f
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
     const isLast = i === segments.length - 1;
+    const stripped = isLast ? segment.replace(/\.(slides|gslides|gdoc|gsheet|sheet)$/i, '') : segment;
+    const nameClause = stripped !== segment
+      ? `(name = '${escapeDriveQueryLiteral(segment)}' or name = '${escapeDriveQueryLiteral(stripped)}')`
+      : `name = '${escapeDriveQueryLiteral(segment)}'`;
 
-    const q = `'${escapeDriveQueryLiteral(currentParentId)}' in parents and name = '${escapeDriveQueryLiteral(segment)}' and trashed = false`;
+    const q = `'${escapeDriveQueryLiteral(currentParentId)}' in parents and ${nameClause} and trashed = false`;
     const res = await withRetry(() => drive.files.list({
       q,
       fields: 'files(id, name, mimeType)'
@@ -328,16 +333,21 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
       targetParentId = await resolvePathToId(folderPath, { createParents: true });
     }
 
-    // Check if file already exists in target parent
-    const q = `'${escapeDriveQueryLiteral(targetParentId)}' in parents and name = '${escapeDriveQueryLiteral(fileName)}' and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
+    const payload = prepareWorkspaceWritePayload({ fileName, content, mimeType });
+
+    // Check if file already exists in target parent (match either targetName or raw fileName)
+    const nameFilter = payload.targetName !== fileName
+      ? `(name = '${escapeDriveQueryLiteral(payload.targetName)}' or name = '${escapeDriveQueryLiteral(fileName)}')`
+      : `name = '${escapeDriveQueryLiteral(payload.targetName)}'`;
+    const q = `'${escapeDriveQueryLiteral(targetParentId)}' in parents and ${nameFilter} and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
     const existingRes = await withRetry(() => drive.files.list({
       q,
       fields: 'files(id, name, mimeType)'
     }));
 
     const media = {
-      mimeType,
-      body: Readable.from(Buffer.from(content || '', 'utf8'))
+      mimeType: payload.uploadMimeType,
+      body: Readable.from(payload.uploadBuffer)
     };
 
     let result;
@@ -345,18 +355,22 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
       const existingFile = existingRes.data.files[0];
       const updateRes = await withRetry(() => drive.files.update({
         fileId: existingFile.id,
+        requestBody: {
+          name: payload.targetName
+        },
         media,
         fields: 'id, name, mimeType, modifiedTime, webViewLink'
       }));
       result = {
         status: 'updated',
-        file: updateRes.data
+        file: updateRes.data,
+        ...payload.extraMeta
       };
     } else {
       const createRes = await withRetry(() => drive.files.create({
         requestBody: {
-          name: fileName,
-          mimeType,
+          name: payload.targetName,
+          mimeType: payload.targetMimeType,
           parents: [targetParentId]
         },
         media,
@@ -364,7 +378,8 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
       }));
       result = {
         status: 'created',
-        file: createRes.data
+        file: createRes.data,
+        ...payload.extraMeta
       };
     }
 

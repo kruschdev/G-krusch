@@ -152,14 +152,14 @@ export function registerMcpTools(mcpServer) {
     }
   );
 
-  // 4. Write Drive File (Save documents, reports, updates to Drive)
+  // 4. Write Drive File (Save Markdown, native Google Docs, Google Sheets, or Google Slides to Drive)
   mcpServer.tool(
     'write_drive_file',
-    'Create or update a document in Google Drive (e.g. saving an analysis, writing code snippets, or generating reports).',
+    'Create or update a file, native Google Doc, Google Sheet, or Google Slides presentation in Google Drive (supports Markdown -> Google Docs, CSV/Markdown tables -> Google Sheets, and "---"-separated Markdown slides -> Google Slides).',
     {
-      path: z.string().describe('Relative path in workspace (e.g. "output/summary.md", "context/new-rules.md")'),
-      content: z.string().describe('Text or markdown content to write'),
-      mime_type: z.string().default('text/markdown').describe('MIME type (default: text/markdown)')
+      path: z.string().describe('Relative path in workspace (e.g. "output/summary.md", "output/report.gdoc", "output/metrics.gsheet", "output/pitch.slides")'),
+      content: z.string().describe('Text, Markdown, CSV, or "---"-separated Markdown slides to write'),
+      mime_type: z.string().default('text/markdown').describe('MIME type (default: "text/markdown"; or "application/vnd.google-apps.document" / "docs", "application/vnd.google-apps.spreadsheet" / "sheets", "application/vnd.google-apps.presentation" / "slides")')
     },
     {
       readOnlyHint: false,
