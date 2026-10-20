@@ -73,12 +73,12 @@ cp .env.example .env
 ```
 
 ### 3. Run Production Diagnostic Doctor & Tests
-*(All 29 unit & hardening tests run hermetically against an isolated per-PID temporary SQLite database with zero external credentials required)*
+*(All 32 unit & hardening tests run hermetically against an isolated per-PID temporary SQLite database with zero external credentials required)*
 ```bash
 # Run 12-point production diagnostic check (Node 22+, SQLite WAL + busy_timeout, FTS5 sync, 12-byte AES-256-GCM, OAuth, Embeddings, Nexus PDF, MCP, Extensions)
 npm run doctor
 
-# Run all 29 unit & hardening tests
+# Run all 32 unit & hardening tests
 npm test
 ```
 
@@ -133,7 +133,7 @@ Endpoints:
 | `get_agent_steering` | Retrieves active `agent.md` steering directives directly from Google Drive. |
 | `search_drive_rag` | Hybrid semantic vector + FTS5 BM25 keyword search across all indexed files in Google Drive. |
 | `read_drive_file` | Reads any document from Drive (exports Google Docs, Sheets, Slides & PDFs cleanly to Markdown/CSV). |
-| `write_drive_file` | Creates or updates Markdown files, native **Google Docs** (`.gdoc`), **Google Sheets** (`.gsheet`), or **Google Slides** presentations (`.slides`) in the workspace. |
+| `write_drive_file` | Creates or updates Markdown files, native **Google Docs** (`.gdoc`), **Google Sheets** (`.gsheet`), or **Google Slides** presentations (`.slides`, with `Notes:` speaker notes) in the workspace. |
 | `delete_drive_file` | Soft-trashes a file in the G-Krusch Google Drive workspace. |
 | `list_drive_workspace`| Lists all folders and files in the G-Krusch Drive hierarchy. |
 | `sync_drive_rag` | Triggers an incremental scan and embedding sync of Google Drive files. |
@@ -157,8 +157,8 @@ In addition to its MCP server, G-Krusch exposes REST Extension APIs on port `544
 | `GET` | `/api/workspace/tree` | Returns recursive folder & file tree for the `G-Krusch` Google Drive workspace. |
 | `GET` | `/api/rag/search?q=...` | Hybrid semantic + FTS5 BM25 search across indexed Google Drive documents (`gkrusch_drive`). |
 | `POST`| `/api/rag/sync` | Incrementally indexes workspace documents into SQLite vector + FTS5 tables. |
-| `GET` | `/api/drive/read?path=...` | Reads a Google Drive file or exports a Google Doc/PDF to Markdown (`gkrusch_drive`). |
-| `POST`| `/api/drive/write` | Creates or updates a Markdown document inside the `G-Krusch` Drive workspace (`gkrusch_drive`). |
+| `GET` | `/api/drive/read?path=...` | Reads a Google Drive file or exports a Google Doc, Sheet, Slides deck, or PDF (`gkrusch_drive`). |
+| `POST`| `/api/drive/write` | Creates or updates a Markdown file, native Google Doc (`.gdoc`), Google Sheet (`.gsheet`), or Google Slides deck (`.slides`) inside the `G-Krusch` Drive workspace (`gkrusch_drive`). |
 | `DELETE`| `/api/drive/file` | Soft-trashes a file by `path` or `fileId`. |
 | `GET` | `/api/calendar/events` | Lists upcoming events from the user's primary Google Calendar (`gkrusch_calendar`). |
 | `POST`| `/api/calendar/events` | Schedules a new Google Calendar event (`{ summary, startTime, endTime, description }`) (`gkrusch_calendar`). |

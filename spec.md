@@ -67,6 +67,11 @@
 3. `listAllFolderFiles` in `src/lib/rag.js` MUST escape `parentId` via `escapeDriveQueryLiteral(parentId)`.
 4. `client/main.js` MUST escape all `data.error`, `err.message`, and `item.id` strings before inserting into `innerHTML`, validate `webViewLink` URLs via `sanitizeSafeUrl(url)` (`https:` / `http:` only) with `rel="noopener noreferrer"`, and dynamically hydrate `#mcp-json-sse` and `#mcp-json-stdio` from `/api/mcp/info`.
 
+### INV-14: Zero-Dependency Native Google Docs, Sheets & Slides Builders & MIME-Type Disambiguation
+1. `src/lib/slides.js` MUST export `prepareWorkspaceWritePayload`, `buildPptxBuffer`, `parseMarkdownSlides`, `markdownToGoogleDocHtml`, `markdownTableOrTextToCsv`, and `inferWorkspaceMimeFromPath` using only Node built-in modules (`zlib`) with zero external dependencies or extra Google Cloud OAuth scopes.
+2. `buildPptxBuffer` MUST generate a valid 16:9 OpenXML `.pptx` ZIP buffer (`ppt/slides/slide{N}.xml` and optional `ppt/notesSlides/notesSlide{N}.xml` when speaker notes are present) imported as `application/vnd.google-apps.presentation`; `markdownToGoogleDocHtml` MUST convert Markdown headings, `<ul>`/`<ol>` lists, `<blockquote>`, `<pre><code>` blocks, and pipe tables into semantic HTML imported as `application/vnd.google-apps.document`; and `markdownTableOrTextToCsv` MUST convert Markdown pipe tables or CSV text into RFC-4180 CSV imported as `application/vnd.google-apps.spreadsheet`.
+3. `writeDriveFile` and `resolvePathToId` in `src/lib/drive.js` MUST disambiguate existing files in the target folder by matching `mimeType` (`inferWorkspaceMimeFromPath` / `payload.targetMimeType`) so same-named Google Docs, Sheets, Slides, and Markdown files never collide or trigger cross-type HTTP 400 update errors.
+
 ---
 
 ## 2. Target Files
@@ -77,7 +82,7 @@
 4. `src/lib/path-utils.js` — `escapeDriveQueryLiteral` and `isValidDriveId` exports.
 5. `src/lib/auth-guard.js` — `isAllowedOrigin` CORS validator and `requireAuthIfConfigured`.
 6. `src/lib/oauth.js` — Remove hardcoded email, add `generateOAuthState` and `verifyOAuthState` with TTL.
-7. `src/lib/drive.js` — Use `escapeDriveQueryLiteral`, `isValidDriveId`, and `isFileInWorkspace` guard in `deleteDriveFile`.
+7. `src/lib/drive.js` — Use `escapeDriveQueryLiteral`, `isValidDriveId`, `isFileInWorkspace` guard in `deleteDriveFile`, and `prepareWorkspaceWritePayload` / `inferWorkspaceMimeFromPath` in `writeDriveFile` & `resolvePathToId`.
 8. `src/lib/rag.js` — Generate embeddings before atomic `db.transaction` in `indexSingleFile`, plus atomic purge transaction in `syncDriveRag`.
 9. `src/routes/auth.js` — Validate OAuth `state` when issued, preserve callback HTML & error escaping.
 10. `src/routes/api.js` — Apply `requireAuthIfConfigured` across data routes while keeping `/status`, `/health`, and `/mcp/info` open for local health probes.
@@ -85,3 +90,4 @@
 12. `client/index.html` & `client/main.js` — Update tool inventory to all 12 MCP tools and check write errors in modal.
 13. `AGENTS.md`, `README.md`, `.env.example`, `bin/doctor.js` — Align documentation and doctor checks with all 12 tools and FTS5 sync check.
 14. `test/hardening.test.js` & `test/smoke.test.js` — Expand hermetic test suite to cover all new hardening invariants.
+15. `src/lib/slides.js` — Zero-dependency OpenXML `.pptx` (Google Slides), semantic HTML (Google Docs), and RFC-4180 CSV (Google Sheets) payload builders.

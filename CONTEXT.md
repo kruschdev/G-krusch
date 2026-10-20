@@ -15,7 +15,7 @@ G-Krusch is the sovereign Google Workspace Hub and Model Context Protocol (MCP) 
 
 ---
 
-## 2. Hardening Invariant Registry (`INV-01` – `INV-13`)
+## 2. Hardening Invariant Registry (`INV-01` – `INV-14`)
 
 | ID | Invariant | Authoritative Implementation |
 |----|-----------|------------------------------|
@@ -32,4 +32,4 @@ G-Krusch is the sovereign Google Workspace Hub and Model Context Protocol (MCP) 
 | `INV-11` | **Security Headers & Sliding-Window Rate Limiter** | [`securityHeadersMiddleware`](src/lib/auth-guard.js) and [`createRateLimiter`](src/lib/auth-guard.js) enforce 120 req/min per IP and defensive HTTP headers. |
 | `INV-12` | **Multi-Client MCP SSE, Unified Steering Mutex & Portable CI** | [`createMcpServer`](src/mcp/tools.js) creates an isolated `McpServer` per SSE session; `getAgentSteering` and `updateAgentSteering` share `'agent_md_steering'` mutex key; zero hardcoded host paths. |
 | `INV-13` | **Embedding Cache Poisoning Guard** | [`generateEmbedding`](src/lib/rag.js) never caches 64-dim offline fallback vectors during transient outages and bypasses `<256`-dim cached entries when real providers are configured. |
-| `INV-14` | **Zero-Dependency Native Google Docs, Sheets & Slides Builders** | [`prepareWorkspaceWritePayload`](src/lib/slides.js) converts Markdown to semantic HTML (`application/vnd.google-apps.document`), Markdown pipe tables/CSV to RFC-4180 CSV (`application/vnd.google-apps.spreadsheet`), and `---`-separated Markdown decks to 16:9 OpenXML `.pptx` archives (`application/vnd.google-apps.presentation`). |
+| `INV-14` | **Zero-Dependency Native Google Docs, Sheets & Slides Builders & MIME Disambiguation** | [`prepareWorkspaceWritePayload`](src/lib/slides.js) converts Markdown (`<h1>`–`<h6>`, `<ul>`, `<ol>`, `<blockquote>`, `<pre><code>`, `<table>`) to semantic HTML (`application/vnd.google-apps.document`), Markdown pipe tables/CSV to RFC-4180 CSV (`application/vnd.google-apps.spreadsheet`), and `---`-separated Markdown decks (with `Notes:` speaker notes) to 16:9 OpenXML `.pptx` archives (`application/vnd.google-apps.presentation`), while [`writeDriveFile`](src/lib/drive.js) and [`resolvePathToId`](src/lib/drive.js) disambiguate same-named files by `mimeType`. |
