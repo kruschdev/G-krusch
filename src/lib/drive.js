@@ -7,7 +7,7 @@ import { withRetry } from './retry.js';
 import { mutex } from './mutex.js';
 import { sanitizeWorkspacePath, escapeDriveQueryLiteral, isValidDriveId } from './path-utils.js';
 import { parsePdfBuffer } from './pdf.js';
-import { prepareWorkspaceWritePayload } from './slides.js';
+import { prepareWorkspaceWritePayload, inferWorkspaceMimeFromPath } from './slides.js';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB safety cap
 const MAX_WRITE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB write cap
@@ -119,7 +119,8 @@ export async function resolvePathToId(relativePath, options = { createParents: f
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
     const isLast = i === segments.length - 1;
-    const stripped = isLast ? segment.replace(/\.(slides|gslides|gdoc|gsheet|sheet)$/i, '') : segment;
+    const stripped = isLast ? segment.replace(/\.(slides|gslides|pptx|gdoc|gsheet|sheet)$/i, '') : segment;
+    const expectedMime = isLast ? inferWorkspaceMimeFromPath(segment) : null;
     const nameClause = stripped !== segment
       ? `(name = '${escapeDriveQueryLiteral(segment)}' or name = '${escapeDriveQueryLiteral(stripped)}')`
       : `name = '${escapeDriveQueryLiteral(segment)}'`;
@@ -131,7 +132,10 @@ export async function resolvePathToId(relativePath, options = { createParents: f
     }));
 
     if (res.data.files && res.data.files.length > 0) {
-      currentParentId = res.data.files[0].id;
+      const matched = expectedMime
+        ? (res.data.files.find(f => f.mimeType === expectedMime) || res.data.files[0])
+        : res.data.files[0];
+      currentParentId = matched.id;
     } else {
       if (!isLast && options.createParents) {
         const folderRes = await withRetry(() => drive.files.create({
@@ -350,9 +354,14 @@ export async function writeDriveFile({ path: relativePath, content, mimeType = '
       body: Readable.from(payload.uploadBuffer)
     };
 
+    const isNativeWorkspaceTarget = String(payload.targetMimeType || '').startsWith('application/vnd.google-apps.');
+    const candidates = existingRes.data.files || [];
+    const existingFile = isNativeWorkspaceTarget
+      ? candidates.find(f => f.mimeType === payload.targetMimeType)
+      : candidates.find(f => !String(f.mimeType || '').startsWith('application/vnd.google-apps.'));
+
     let result;
-    if (existingRes.data.files && existingRes.data.files.length > 0) {
-      const existingFile = existingRes.data.files[0];
+    if (existingFile) {
       const updateRes = await withRetry(() => drive.files.update({
         fileId: existingFile.id,
         requestBody: {

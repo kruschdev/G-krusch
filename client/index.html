@@ -258,7 +258,7 @@
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>write_drive_file</code></div>
-              <div class="tool-desc">Creates or updates documents in Google Drive, allowing agents to persist deliverables with 10MB safety caps.</div>
+              <div class="tool-desc">Creates or updates Markdown files, native Google Docs (<code>.gdoc</code>), Google Sheets (<code>.gsheet</code>), and Google Slides (<code>.slides</code>) with 10MB safety caps.</div>
             </div>
             <div class="tool-item">
               <div class="tool-name"><code>delete_drive_file</code></div>
@@ -309,9 +309,9 @@
       </div>
       <div class="modal-body">
         <label>Relative Path inside G-Krusch:</label>
-        <input type="text" id="new-file-path" placeholder="e.g. context/architecture-overview.md or output/sprint-plan.md" />
+        <input type="text" id="new-file-path" placeholder="e.g. context/spec.md, output/report.gdoc, output/metrics.gsheet, or output/pitch.slides" />
         
-        <label>Content (Markdown or Plain Text):</label>
+        <label>Content (Markdown, Pipe Table / CSV, or --- Slide Deck):</label>
         <textarea id="new-file-content" rows="8" placeholder="# Document Title&#10;&#10;Write initial content here..."></textarea>
       </div>
       <div class="modal-footer">

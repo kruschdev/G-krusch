@@ -14,6 +14,7 @@ import {
   markdownToGoogleDocHtml,
   markdownTableOrTextToCsv,
   prepareWorkspaceWritePayload,
+  inferWorkspaceMimeFromPath,
   GOOGLE_SLIDES_MIME,
   GOOGLE_DOCS_MIME,
   GOOGLE_SHEETS_MIME,
@@ -175,6 +176,7 @@ test('Workspace Formats: Google Slides, Docs, and Sheets payload builders', () =
 # Q4 Architecture Review
 - Zero-trust MCP boundaries
 - Hybrid Vector + BM25 RAG
+Notes: Highlight our 1024-dim bge-large embeddings.
 ---
 # Fleet Topology
 - krusch: Central Orchestrator
@@ -185,9 +187,11 @@ test('Workspace Formats: Google Slides, Docs, and Sheets payload builders', () =
   assert.equal(slides.length, 2);
   assert.equal(slides[0].title, 'Q4 Architecture Review');
   assert.deepEqual(slides[0].bullets, ['Zero-trust MCP boundaries', 'Hybrid Vector + BM25 RAG']);
+  assert.equal(slides[0].notes, 'Highlight our 1024-dim bge-large embeddings.');
 
   const pptxBuf = buildPptxBuffer(slides);
   assert.equal(pptxBuf.readUInt32LE(0), 0x04034b50, 'PPTX buffer must start with PK ZIP local header signature');
+  assert.ok(pptxBuf.includes(Buffer.from('ppt/notesSlides/notesSlide1.xml')), 'PPTX ZIP directory must include notesSlide1.xml when speaker notes exist');
 
   const slidesPayload = prepareWorkspaceWritePayload({
     fileName: 'roadmap.slides',
@@ -199,12 +203,40 @@ test('Workspace Formats: Google Slides, Docs, and Sheets payload builders', () =
   assert.equal(slidesPayload.uploadMimeType, PPTX_MIME);
   assert.equal(slidesPayload.extraMeta.slidesCount, 2);
 
-  const docHtml = markdownToGoogleDocHtml('# Heading 1\n- Item A\n- **Bold Item**', 'My Spec');
+  // Verify .md source extension is stripped when mime_type='slides'
+  const mdSlidesPayload = prepareWorkspaceWritePayload({
+    fileName: 'pitch.md',
+    content: deckMd,
+    mimeType: 'slides'
+  });
+  assert.equal(mdSlidesPayload.targetName, 'pitch');
+  assert.equal(mdSlidesPayload.targetMimeType, GOOGLE_SLIDES_MIME);
+
+  const richDocMd = [
+    '# Heading 1',
+    '- Item A',
+    '- **Bold Item**',
+    '1. First step',
+    '2. Second step',
+    '> Sovereign quote',
+    '```js',
+    'const x = 1;',
+    '```',
+    '| Col 1 | Col 2 |',
+    '|---|---|',
+    '| Val A | Val B |'
+  ].join('\n');
+  const docHtml = markdownToGoogleDocHtml(richDocMd, 'My Spec');
   assert.ok(docHtml.includes('<h1>Heading 1</h1>'));
   assert.ok(docHtml.includes('<li><strong>Bold Item</strong></li>'));
+  assert.ok(docHtml.includes('<ol>\n<li>First step</li>\n<li>Second step</li>\n</ol>'));
+  assert.ok(docHtml.includes('<blockquote><p>Sovereign quote</p></blockquote>'));
+  assert.ok(docHtml.includes('<pre><code>const x = 1;</code></pre>'));
+  assert.ok(docHtml.includes('<th>Col 1</th><th>Col 2</th>'));
+  assert.ok(docHtml.includes('<td>Val A</td><td>Val B</td>'));
 
   const docPayload = prepareWorkspaceWritePayload({
-    fileName: 'spec.gdoc',
+    fileName: 'spec.md',
     content: '# Spec\nHello world',
     mimeType: 'docs'
   });
@@ -213,21 +245,29 @@ test('Workspace Formats: Google Slides, Docs, and Sheets payload builders', () =
   assert.equal(docPayload.uploadMimeType, 'text/html');
 
   const tableMd = `
+# Fleet Inventory
 | Node | Role |
 |---|---|
 | krusch | Orchestrator, "Primary" |
-| kruschdev | Compute |
+| kruschdev | Compute \\| MoE |
   `.trim();
   const csv = markdownTableOrTextToCsv(tableMd);
-  assert.equal(csv, 'Node,Role\r\nkrusch,"Orchestrator, ""Primary"""\r\nkruschdev,Compute');
+  assert.equal(csv, 'Node,Role\r\nkrusch,"Orchestrator, ""Primary"""\r\nkruschdev,Compute | MoE');
 
   const sheetPayload = prepareWorkspaceWritePayload({
-    fileName: 'fleet.gsheet',
+    fileName: 'fleet.csv',
     content: tableMd,
     mimeType: 'sheets'
   });
   assert.equal(sheetPayload.targetName, 'fleet');
   assert.equal(sheetPayload.targetMimeType, GOOGLE_SHEETS_MIME);
   assert.equal(sheetPayload.uploadMimeType, 'text/csv');
+
+  assert.equal(inferWorkspaceMimeFromPath('deck.slides'), GOOGLE_SLIDES_MIME);
+  assert.equal(inferWorkspaceMimeFromPath('deck.pptx'), GOOGLE_SLIDES_MIME);
+  assert.equal(inferWorkspaceMimeFromPath('doc.gdoc'), GOOGLE_DOCS_MIME);
+  assert.equal(inferWorkspaceMimeFromPath('metrics.gsheet'), GOOGLE_SHEETS_MIME);
+  assert.equal(inferWorkspaceMimeFromPath('notes.md'), null);
 });
+
 

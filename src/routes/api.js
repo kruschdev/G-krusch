@@ -76,7 +76,7 @@ router.get('/health', (req, res) => {
         documentsIndexed: docCount,
         totalChunks: chunkCount
       },
-      extensions: ['drive', 'docs', 'calendar', 'gmail']
+      extensions: ['drive', 'docs', 'sheets', 'slides', 'calendar', 'gmail']
     });
   } catch (err) {
     res.status(500).json({ status: 'unhealthy', error: err.message });

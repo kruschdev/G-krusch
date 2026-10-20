@@ -21,7 +21,11 @@ export function isSlidesTarget(relativePath = '', mimeType = '') {
   ) {
     return true;
   }
-  return normalizedPath.endsWith('.slides') || normalizedPath.endsWith('.gslides');
+  return (
+    normalizedPath.endsWith('.slides') ||
+    normalizedPath.endsWith('.gslides') ||
+    normalizedPath.endsWith('.pptx')
+  );
 }
 
 /**
@@ -62,6 +66,23 @@ export function isSheetsTarget(relativePath = '', mimeType = '') {
   return normalizedPath.endsWith('.gsheet') || normalizedPath.endsWith('.sheet');
 }
 
+/**
+ * Infer expected native Google Workspace MIME type from a virtual file extension, if any.
+ */
+export function inferWorkspaceMimeFromPath(relativePath = '') {
+  const lower = String(relativePath || '').trim().toLowerCase();
+  if (lower.endsWith('.slides') || lower.endsWith('.gslides') || lower.endsWith('.pptx')) {
+    return GOOGLE_SLIDES_MIME;
+  }
+  if (lower.endsWith('.gdoc')) {
+    return GOOGLE_DOCS_MIME;
+  }
+  if (lower.endsWith('.gsheet') || lower.endsWith('.sheet')) {
+    return GOOGLE_SHEETS_MIME;
+  }
+  return null;
+}
+
 function escapeHtml(str = '') {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -79,9 +100,19 @@ function formatInlineMarkdownToHtml(text = '') {
   return out;
 }
 
+function splitMarkdownTableRow(line) {
+  const stripped = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return stripped.split(/(?<!\\)\|/).map(c => c.replace(/\\\|/g, '|').trim());
+}
+
+function isMarkdownTableSeparator(cells) {
+  return cells.length > 0 && cells.every(c => /^:?-{2,}:?$/.test(c));
+}
+
 /**
  * Convert Markdown (or HTML) into clean semantic HTML so Google Drive API v3
- * imports it as a rich native Google Doc with real headings, lists, and formatting.
+ * imports it as a rich native Google Doc with real headings, lists, code blocks,
+ * blockquotes, and tables.
  */
 export function markdownToGoogleDocHtml(content = '', title = 'Document') {
   const raw = String(content || '').replace(/\r\n/g, '\n').trim();
@@ -91,20 +122,68 @@ export function markdownToGoogleDocHtml(content = '', title = 'Document') {
 
   const lines = raw.split('\n');
   const htmlParts = [];
-  let inList = false;
+  let listType = null; // 'ul' | 'ol' | null
+  let inCodeBlock = false;
+  let codeLines = [];
+  let tableRows = [];
 
   const closeList = () => {
-    if (inList) {
-      htmlParts.push('</ul>');
-      inList = false;
+    if (listType) {
+      htmlParts.push(`</${listType}>`);
+      listType = null;
     }
+  };
+
+  const flushTable = () => {
+    if (tableRows.length === 0) return;
+    const parsedRows = tableRows.map(splitMarkdownTableRow);
+    tableRows = [];
+    const filtered = parsedRows.filter(r => !isMarkdownTableSeparator(r));
+    if (filtered.length === 0) return;
+
+    const header = filtered[0];
+    const body = filtered.slice(1);
+    const thead = `<thead><tr>${header.map(c => `<th>${formatInlineMarkdownToHtml(c)}</th>`).join('')}</tr></thead>`;
+    const tbody = body.length > 0
+      ? `<tbody>${body.map(r => `<tr>${r.map(c => `<td>${formatInlineMarkdownToHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>`
+      : '';
+    htmlParts.push(`<table border="1" style="border-collapse:collapse;">${thead}${tbody}</table>`);
   };
 
   for (const line of lines) {
     const trimmed = line.trim();
+
+    if (/^```/.test(trimmed)) {
+      closeList();
+      flushTable();
+      if (!inCodeBlock) {
+        inCodeBlock = true;
+        codeLines = [];
+      } else {
+        htmlParts.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+        inCodeBlock = false;
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
     if (!trimmed) {
       closeList();
+      flushTable();
       continue;
+    }
+
+    if (trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.length > 2) {
+      closeList();
+      tableRows.push(trimmed);
+      continue;
+    } else {
+      flushTable();
     }
 
     if (/^---\s*$/.test(trimmed)) {
@@ -123,11 +202,30 @@ export function markdownToGoogleDocHtml(content = '', title = 'Document') {
 
     const bulletMatch = trimmed.match(/^[-*+]\s+(.*)$/);
     if (bulletMatch) {
-      if (!inList) {
+      if (listType !== 'ul') {
+        closeList();
         htmlParts.push('<ul>');
-        inList = true;
+        listType = 'ul';
       }
       htmlParts.push(`<li>${formatInlineMarkdownToHtml(bulletMatch[1].trim())}</li>`);
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+    if (orderedMatch) {
+      if (listType !== 'ol') {
+        closeList();
+        htmlParts.push('<ol>');
+        listType = 'ol';
+      }
+      htmlParts.push(`<li>${formatInlineMarkdownToHtml(orderedMatch[1].trim())}</li>`);
+      continue;
+    }
+
+    const quoteMatch = trimmed.match(/^>\s?(.*)$/);
+    if (quoteMatch) {
+      closeList();
+      htmlParts.push(`<blockquote><p>${formatInlineMarkdownToHtml(quoteMatch[1].trim())}</p></blockquote>`);
       continue;
     }
 
@@ -135,7 +233,11 @@ export function markdownToGoogleDocHtml(content = '', title = 'Document') {
     htmlParts.push(`<p>${formatInlineMarkdownToHtml(trimmed)}</p>`);
   }
 
+  if (inCodeBlock && codeLines.length > 0) {
+    htmlParts.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+  }
   closeList();
+  flushTable();
 
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escapeHtml(title)}</title></head><body>${htmlParts.join('\n')}</body></html>`;
 }
@@ -156,19 +258,22 @@ export function markdownTableOrTextToCsv(content = '') {
   const raw = String(content || '').replace(/\r\n/g, '\n').trim();
   if (!raw) return '';
 
-  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  const looksLikeMarkdownTable = lines.length >= 2 && lines.every(l => l.includes('|'));
+  const nonEmptyLines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  const hasSeparatorRow = nonEmptyLines.some(l => isMarkdownTableSeparator(splitMarkdownTableRow(l)));
+  const allStartWithPipe = nonEmptyLines.length >= 1 && nonEmptyLines.every(l => l.startsWith('|') && l.endsWith('|'));
 
-  if (!looksLikeMarkdownTable) {
+  if (!hasSeparatorRow && !allStartWithPipe) {
     return raw;
   }
 
+  const targetLines = allStartWithPipe
+    ? nonEmptyLines
+    : nonEmptyLines.filter(l => l.includes('|'));
+
   const csvRows = [];
-  for (const line of lines) {
-    const stripped = line.replace(/^\|/, '').replace(/\|$/, '');
-    const cells = stripped.split('|').map(c => c.trim());
-    // Skip markdown separator row like |---|---|
-    if (cells.every(c => /^:?-{2,}:?$/.test(c))) {
+  for (const line of targetLines) {
+    const cells = splitMarkdownTableRow(line);
+    if (isMarkdownTableSeparator(cells)) {
       continue;
     }
     csvRows.push(cells.map(escapeCsvCell).join(','));
@@ -188,7 +293,7 @@ export function markdownTableOrTextToCsv(content = '') {
  */
 export function parseMarkdownSlides(content = '', fallbackTitle = 'Presentation') {
   const raw = String(content || '').replace(/\r\n/g, '\n').trim();
-  const cleanFallback = String(fallbackTitle || 'Presentation').replace(/\.(slides|gslides|pptx|md)$/i, '');
+  const cleanFallback = String(fallbackTitle || 'Presentation').replace(/\.(slides|gslides|pptx|md)$/i, '') || 'Presentation';
 
   if (!raw) {
     return [{ title: cleanFallback, bullets: [''], notes: '' }];
@@ -227,6 +332,13 @@ export function parseMarkdownSlides(content = '', fallbackTitle = 'Presentation'
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+
+      const inlineNotesMatch = trimmed.match(/^(?:speaker\s+)?notes?:\s*(.+)$/i);
+      if (inlineNotesMatch) {
+        inNotesSection = true;
+        noteLines.push(inlineNotesMatch[1].trim());
+        continue;
+      }
 
       if (/^(?:speaker\s+)?notes?:\s*$/i.test(trimmed)) {
         inNotesSection = true;
@@ -450,6 +562,48 @@ function buildSlideXml(slide) {
 </p:sld>`;
 }
 
+function buildNotesSlideXml(notesText = '') {
+  const paragraphs = String(notesText || '')
+    .split('\n')
+    .map(line => `<a:p><a:r><a:rPr lang="en-US" dirty="0"/><a:t>${escapeXml(line)}</a:t></a:r></a:p>`)
+    .join('');
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr>
+        <p:cNvPr id="1" name=""/>
+        <p:cNvGrpSpPr/>
+        <p:nvPr/>
+      </p:nvGrpSpPr>
+      <p:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="0" cy="0"/>
+          <a:chOff x="0" y="0"/>
+          <a:chExt cx="0" cy="0"/>
+        </a:xfrm>
+      </p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="2" name="Notes Placeholder 1"/>
+          <p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
+          <p:nvPr><p:ph type="body" idx="1"/></p:nvPr>
+        </p:nvSpPr>
+        <p:spPr/>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          ${paragraphs || '<a:p><a:endParaRPr lang="en-US"/></a:p>'}
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:notes>`;
+}
+
 /**
  * Build a complete, standards-compliant OpenXML (.pptx) buffer from Markdown or structured slides.
  * Google Drive API v3 automatically converts this buffer into a native Google Slides deck
@@ -463,7 +617,13 @@ export function buildPptxBuffer(slidesInput, fallbackTitle = 'Presentation') {
   const entries = [];
 
   const slideContentTypes = slides
-    .map((_, idx) => `<Override PartName="/ppt/slides/slide${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`)
+    .map((s, idx) => {
+      const slideOverride = `<Override PartName="/ppt/slides/slide${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`;
+      if (s.notes && s.notes.trim()) {
+        return `${slideOverride}\n  <Override PartName="/ppt/notesSlides/notesSlide${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>`;
+      }
+      return slideOverride;
+    })
     .join('\n  ');
 
   entries.push({
@@ -604,17 +764,36 @@ export function buildPptxBuffer(slidesInput, fallbackTitle = 'Presentation') {
 
   slides.forEach((slide, idx) => {
     const slideNum = idx + 1;
+    const hasNotes = Boolean(slide.notes && slide.notes.trim());
+    const notesRel = hasNotes
+      ? `\n  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${slideNum}.xml"/>`
+      : '';
+
     entries.push({
       name: `ppt/slides/_rels/slide${slideNum}.xml.rels`,
       data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>${notesRel}
 </Relationships>`
     });
     entries.push({
       name: `ppt/slides/slide${slideNum}.xml`,
       data: buildSlideXml(slide)
     });
+
+    if (hasNotes) {
+      entries.push({
+        name: `ppt/notesSlides/_rels/notesSlide${slideNum}.xml.rels`,
+        data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide${slideNum}.xml"/>
+</Relationships>`
+      });
+      entries.push({
+        name: `ppt/notesSlides/notesSlide${slideNum}.xml`,
+        data: buildNotesSlideXml(slide.notes)
+      });
+    }
   });
 
   return buildZipBuffer(entries);
@@ -626,7 +805,7 @@ export function buildPptxBuffer(slidesInput, fallbackTitle = 'Presentation') {
  */
 export function prepareWorkspaceWritePayload({ fileName, content = '', mimeType = 'text/markdown' }) {
   if (isSlidesTarget(fileName, mimeType)) {
-    const cleanName = fileName.replace(/\.(slides|gslides)$/i, '');
+    const cleanName = fileName.replace(/\.(slides|gslides|pptx|md)$/i, '') || fileName;
     const parsedSlides = parseMarkdownSlides(content, cleanName);
     const pptxBuffer = buildPptxBuffer(parsedSlides, cleanName);
     return {
@@ -639,7 +818,7 @@ export function prepareWorkspaceWritePayload({ fileName, content = '', mimeType 
   }
 
   if (isDocsTarget(fileName, mimeType)) {
-    const cleanName = fileName.replace(/\.gdoc$/i, '');
+    const cleanName = fileName.replace(/\.(gdoc|doc|docx|md|html|txt)$/i, '') || fileName;
     const html = markdownToGoogleDocHtml(content, cleanName);
     return {
       targetName: cleanName,
@@ -651,7 +830,7 @@ export function prepareWorkspaceWritePayload({ fileName, content = '', mimeType 
   }
 
   if (isSheetsTarget(fileName, mimeType)) {
-    const cleanName = fileName.replace(/\.(gsheet|sheet)$/i, '');
+    const cleanName = fileName.replace(/\.(gsheet|sheet|xlsx|csv|tsv|md)$/i, '') || fileName;
     const csv = markdownTableOrTextToCsv(content);
     return {
       targetName: cleanName,

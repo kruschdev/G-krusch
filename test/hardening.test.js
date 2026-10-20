@@ -530,6 +530,7 @@ test('Hardening: Pre-spool PDF magic-byte security gate, per-session MCP SSE iso
     'src/lib/pdf.js',
     'src/lib/steering.js',
     'src/lib/drive.js',
+    'src/lib/slides.js',
     'src/lib/rag.js',
     'src/lib/oauth.js',
     'client/index.html',
@@ -644,6 +645,16 @@ test('Hardening: Transactional RAG/FTS5 purge on file deletion and readDriveFile
   assert.ok(
     driveSrc.includes("mimeType != 'application/vnd.google-apps.folder'"),
     'writeDriveFile lookup must exclude folders (GKR-08)'
+  );
+
+  // INV-14: Native Google Workspace MIME disambiguation in writeDriveFile and resolvePathToId
+  assert.ok(
+    driveSrc.includes('candidates.find(f => f.mimeType === payload.targetMimeType)'),
+    'writeDriveFile must disambiguate existing native Google Workspace files by targetMimeType (INV-14)'
+  );
+  assert.ok(
+    driveSrc.includes('inferWorkspaceMimeFromPath(segment)'),
+    'resolvePathToId must prefer matching native Workspace MIME type when virtual extension is provided (INV-14)'
   );
 
   // GKR-09: ensureFtsSync cleans orphaned FTS rows when chunkCount === 0
