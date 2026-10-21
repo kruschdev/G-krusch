@@ -15,7 +15,7 @@
 3. `getDb()` in `src/lib/db.js` MUST detect and self-heal FTS5 desynchronization on startup: if `rag_chunks` has rows (`COUNT(*) > 0`) while `rag_chunks_fts` has `0` rows (or differs in count), it MUST automatically rebuild `rag_chunks_fts` from `rag_chunks` inside an atomic SQLite transaction.
 
 ### INV-02: OAuth 2.0 CSRF State Validation & Zero Hardcoded PII
-1. `src/lib/oauth.js` MUST NOT contain any hardcoded personal email addresses (such as `'ksruschman@gmail.com'`). `getAuthorizationUrl(loginHint)` MUST only include `login_hint` if `loginHint` or `process.env.GOOGLE_LOGIN_HINT` is explicitly provided.
+1. `src/lib/oauth.js` MUST NOT contain any hardcoded personal email addresses (such as `'user@example.com'`). `getAuthorizationUrl(loginHint)` MUST only include `login_hint` if `loginHint` or `process.env.GOOGLE_LOGIN_HINT` is explicitly provided.
 2. `getAuthorizationUrl()` MUST generate a cryptographically random 32-byte hex `state` token (`crypto.randomBytes(32).toString('hex')`), store it with a 10-minute expiration window, and pass `state` in `client.generateAuthUrl(...)`.
 3. `oauthCallbackHandler` in `src/routes/auth.js` MUST verify the OAuth `state` parameter using constant-time comparison (`verifyOAuthState`) when an active state token has been issued via `/auth/google`, rejecting mismatched or expired `state` values with HTTP `403`.
 
