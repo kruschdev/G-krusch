@@ -166,7 +166,9 @@ export async function parsePdfBuffer(buffer, filename = 'document.pdf', options 
   } finally {
     try {
       await fsp.rm(tempDir, { recursive: true, force: true });
-    } catch {}
+    } catch (err) {
+      console.warn('[pdf] Failed to remove temporary PDF directory:', err.message);
+    }
   }
 }
 

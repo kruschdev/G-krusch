@@ -53,7 +53,8 @@ export async function getOrCreateWorkspaceFolder() {
         if (res.data && !res.data.trashed) {
           return cachedFolderId;
         }
-      } catch {
+      } catch (err) {
+        console.error(`[Drive] Cached workspace folder lookup failed for ${cachedFolderId}:`, err?.message || err);
         // Cached ID invalid or deleted, re-discover below
       }
     }
@@ -137,7 +138,7 @@ export async function resolvePathToId(relativePath, options = { createParents: f
         : res.data.files[0];
       currentParentId = matched.id;
     } else {
-      if (!isLast && options.createParents) {
+      if (options.createParents) {
         const folderRes = await withRetry(() => drive.files.create({
           requestBody: {
             name: segment,
@@ -313,16 +314,50 @@ export async function readDriveFile(fileId, { enforceWorkspace = true } = {}) {
   };
 }
 
+export const ALLOWED_WRITE_MIME_TYPES = new Set([
+  'text/markdown',
+  'text/plain',
+  'text/csv',
+  'text/html',
+  'application/json',
+  'application/vnd.google-apps.document',
+  'application/vnd.google-apps.spreadsheet',
+  'application/vnd.google-apps.presentation',
+  'markdown',
+  'doc',
+  'gdoc',
+  'sheet',
+  'gsheet',
+  'slides',
+  'gslides'
+]);
+
+export function validateWriteDriveArgs({ content, mimeType = 'text/markdown' }) {
+  if (!ALLOWED_WRITE_MIME_TYPES.has(mimeType)) {
+    throw new Error(`Unsupported mimeType: ${mimeType}`);
+  }
+  if (content !== undefined && content !== null) {
+    let byteLen = 0;
+    if (typeof content === 'string') {
+      byteLen = Buffer.byteLength(content, 'utf8');
+    } else if (Buffer.isBuffer(content) || content instanceof Uint8Array) {
+      byteLen = content.byteLength;
+    } else {
+      byteLen = Buffer.byteLength(JSON.stringify(content), 'utf8');
+    }
+    if (byteLen > MAX_WRITE_SIZE_BYTES) {
+      throw new Error(`Write content exceeds maximum allowed size limit of 10MB.`);
+    }
+  }
+}
+
 /**
  * Creates or updates a file in Google Drive inside the workspace.
  * Mutex protected by target path.
  */
 export async function writeDriveFile({ path: relativePath, content, mimeType = 'text/markdown' }) {
   const cleanPath = sanitizeWorkspacePath(relativePath);
-
-  if (content && typeof content === 'string' && Buffer.byteLength(content, 'utf8') > MAX_WRITE_SIZE_BYTES) {
-    throw new Error(`Write content exceeds maximum allowed size limit of 10MB.`);
-  }
+  validateWriteDriveArgs({ content, mimeType });
 
   return mutex.runExclusive(`write:${cleanPath}`, async () => {
     const drive = await getDrive();

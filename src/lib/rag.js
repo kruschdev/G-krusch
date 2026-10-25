@@ -78,15 +78,72 @@ export function chunkText(text, chunkSize = 800, overlap = 150) {
 }
 
 /**
- * Generate vector embedding for a string with SQLite caching.
- * Prioritizes local GPU Ollama (bge-large:latest, 1024-dim) with cloud fallback to
- * Gemini gemini-embedding-001 (outputDimensionality: 1024) and prevents 64-dim offline
- * fallback vectors from poisoning the persistent SQLite cache on transient network errors.
+ * Normalize an Ollama host or legacy `/api/embeddings` URL to `/api/embed`.
+ * Preserves `/api/embed` when already present.
  */
-export async function generateEmbedding(text) {
+export function resolveOllamaEmbedUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (trimmed.endsWith('/api/embeddings')) {
+    return `${trimmed.slice(0, -'/api/embeddings'.length)}/api/embed`;
+  }
+  if (trimmed.endsWith('/api/embed')) {
+    return trimmed;
+  }
+  return `${trimmed}/api/embed`;
+}
+
+function resolveOllamaLegacyEmbedUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (trimmed.endsWith('/api/embeddings')) {
+    return trimmed;
+  }
+  if (trimmed.endsWith('/api/embed')) {
+    return `${trimmed.slice(0, -'/api/embed'.length)}/api/embeddings`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (!parsed.pathname || parsed.pathname === '/') {
+      return `${trimmed}/api/embeddings`;
+    }
+  } catch {
+    // Non-standard URL string; fall back to raw trimmed URL
+  }
+  return trimmed;
+}
+
+/**
+ * Generate vector embedding for a string with SQLite caching.
+ * Prioritizes local GPU Ollama (bge-large:latest, 1024-dim) via /api/embed with legacy 404 retry,
+ * isolates vector spaces so incompatible models never collide or cross-contaminate, and prevents
+ * 64-dim offline fallback vectors from poisoning the persistent SQLite cache on transient errors.
+ */
+export async function generateEmbedding(text, options = {}) {
+  const mode = options?.mode || 'document';
   const clean = text.replace(/\n+/g, ' ').slice(0, 2048);
-  const textHash = crypto.createHash('sha256').update(clean).digest('hex');
   const useLiveProviders = !config.isTestRuntime || process.env.GCRUSH_TEST_LIVE_EMBEDDINGS === 'true';
+
+  const ollamaModel = config.ai.ollamaModel || 'snowflake-arctic-embed2:latest';
+  const baseSpaceId = !useLiveProviders
+    ? 'offline:64'
+    : config.ai.ollamaUrl
+      ? `ollama:${ollamaModel}`
+      : config.ai.geminiApiKey
+        ? 'gemini:gemini-embedding-001:1024'
+        : 'offline:64';
+  const activeDims = (!useLiveProviders || (!config.ai.ollamaUrl && !config.ai.geminiApiKey)) ? 64 : 1024;
+  const activeModel = !useLiveProviders
+    ? 'deterministic'
+    : config.ai.ollamaUrl
+      ? ollamaModel
+      : config.ai.geminiApiKey
+        ? 'gemini-embedding-001'
+        : 'deterministic';
+  const spaceId = `${baseSpaceId}:model=${activeModel}:dim=${activeDims}:mode=${mode}`;
+  const textHash = crypto.createHash('sha256').update(`${spaceId}::${clean}`).digest('hex');
 
   // Check persistent SQLite cache first (in production, bypass stale <256-dim fallback entries)
   const cached = getCachedEmbedding(textHash);
@@ -98,32 +155,59 @@ export async function generateEmbedding(text) {
 
   let embedding = null;
   let fromLiveProvider = false;
+  let resolvedProvider = null;
 
-  // 1. Try Sovereign Local GPU Ollama (bge-large:latest, 1024-dim) first
+  // 1. Try Sovereign Local GPU Ollama (bge-large:latest, 1024-dim) first via /api/embed
   if (useLiveProviders && config.ai.ollamaUrl) {
     try {
-      const res = await fetch(config.ai.ollamaUrl, {
+      const embedUrl = resolveOllamaEmbedUrl(config.ai.ollamaUrl);
+      let res = await fetch(embedUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
           model: config.ai.ollamaModel,
-          prompt: clean
+          input: clean,
+          prompt: clean,
+          truncate: true,
+          keep_alive: -1,
+          ...(String(config.ai.ollamaModel || '').startsWith('qwen3-embedding') ? { dimensions: 1024 } : {})
         })
       });
 
+      const legacyUrl = resolveOllamaLegacyEmbedUrl(config.ai.ollamaUrl);
+      if (res.status === 404 && legacyUrl && legacyUrl !== embedUrl) {
+        res = await fetch(legacyUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+          body: JSON.stringify({
+            model: config.ai.ollamaModel,
+            prompt: clean,
+            truncate: true,
+            keep_alive: -1
+          })
+        });
+      }
+
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.embedding) && data.embedding.length > 0) {
-          embedding = data.embedding;
+        const vec = Array.isArray(data.embeddings?.[0]) ? data.embeddings[0] : data.embedding;
+        if (Array.isArray(vec) && vec.length > 0) {
+          embedding = vec;
           fromLiveProvider = true;
+          resolvedProvider = 'ollama';
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn('[rag] Ollama embedding request failed, falling back:', err.message);
+    }
   }
 
   // 2. Cloud Fallback: Gemini gemini-embedding-001 (configured to 1024-dim parity)
-  if (useLiveProviders && !embedding && config.ai.geminiApiKey) {
+  // INV-05(2): Only allow cloud fallback when Ollama is unconfigured or explicitly permitted
+  const allowCloudFallback = !config.ai.ollamaUrl || process.env.ALLOW_CLOUD_EMBED_FALLBACK === 'true';
+  if (useLiveProviders && !embedding && config.ai.geminiApiKey && allowCloudFallback) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${config.ai.geminiApiKey}`;
       const res = await withRetry(async () => {
@@ -150,6 +234,7 @@ export async function generateEmbedding(text) {
         if (Array.isArray(data.embedding?.values) && data.embedding.values.length > 0) {
           embedding = data.embedding.values;
           fromLiveProvider = true;
+          resolvedProvider = 'gemini';
         }
       }
     } catch (e) {
@@ -164,7 +249,10 @@ export async function generateEmbedding(text) {
 
   // Only persist into SQLite cache if produced by a live provider or running in offline/test mode
   if (fromLiveProvider || !useLiveProviders || (!config.ai.ollamaUrl && !config.ai.geminiApiKey)) {
-    saveCachedEmbedding(textHash, embedding);
+    const cacheHash = (resolvedProvider === 'gemini' && config.ai.ollamaUrl)
+      ? crypto.createHash('sha256').update(`gemini:gemini-embedding-001:1024:model=gemini-embedding-001:dim=1024:mode=${mode}::${clean}`).digest('hex')
+      : textHash;
+    saveCachedEmbedding(cacheHash, embedding);
   }
   return embedding;
 }

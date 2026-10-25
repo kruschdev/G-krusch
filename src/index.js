@@ -70,11 +70,12 @@ if (isStdio) {
         if (!entry.res.writableEnded) {
           entry.res.write(':keepalive\n\n');
         } else {
-          try { entry.server?.close?.(); } catch {}
+          try { entry.server?.close?.(); } catch (err) { console.error('SSE cleanup error (inner):', err); }
           transports.delete(id);
         }
-      } catch {
-        try { entry.server?.close?.(); } catch {}
+      } catch (outerErr) {
+        console.error('SSE heartbeat write error:', outerErr);
+        try { entry.server?.close?.(); } catch (err) { console.error('SSE cleanup error (outer):', err); }
         transports.delete(id);
       }
     }
@@ -96,7 +97,7 @@ if (isStdio) {
     transports.set(transport.sessionId, { transport, res, server: sessionServer });
 
     res.on('close', () => {
-      try { sessionServer.close?.(); } catch {}
+      try { sessionServer.close?.(); } catch (err) { console.error('SSE session close error:', err); }
       transports.delete(transport.sessionId);
     });
 

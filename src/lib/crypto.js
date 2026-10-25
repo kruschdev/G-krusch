@@ -10,16 +10,35 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // NIST SP 800-38D recommended 96-bit IV for AES-GCM
 const AUTH_TAG_LENGTH = 16;
 
+let cachedKey = null;
+let cachedSecret = null;
+
 /**
- * Derives a consistent 32-byte key from the configured secret or a fallback.
+ * Clears the memoized derived encryption key cache.
  */
-function getDerivedKey() {
+export function resetCryptoKeyCache() {
+  cachedKey = null;
+  cachedSecret = null;
+}
+
+/**
+ * Derives and caches a consistent 32-byte key from the configured secret.
+ * Throws if no encryption secret is configured (SEC-01, PERF-01).
+ */
+export function getDerivedKey() {
   const secret =
     process.env.ENCRYPTION_KEY ||
     process.env.GCRUSH_SECRET ||
-    config.google.clientSecret ||
-    'g-krusch-homelab-secure-fallback-key-2026';
-  return crypto.createHash('sha256').update(secret).digest();
+    config.google.clientSecret;
+  if (!secret || !String(secret).trim()) {
+    throw new Error('Encryption secret not configured');
+  }
+  if (cachedKey && cachedSecret === secret) {
+    return cachedKey;
+  }
+  cachedSecret = secret;
+  cachedKey = crypto.createHash('sha256').update(secret).digest();
+  return cachedKey;
 }
 
 /**

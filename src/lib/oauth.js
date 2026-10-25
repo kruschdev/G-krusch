@@ -7,56 +7,79 @@ import { mutex } from './mutex.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_PENDING_OAUTH_STATES = 32;
-let cachedClient = null;
-let cachedTokensHash = null;
-/** @type {Map<string, number>} */
-const pendingOAuthStates = new Map();
+const oauthCacheState = {
+  client: null,
+  tokensHash: null,
+  /** @type {Map<string, number>} */
+  pendingStates: new Map()
+};
 
 function pruneExpiredOAuthStates(now = Date.now()) {
-  for (const [token, expiresAt] of pendingOAuthStates) {
+  for (const [token, expiresAt] of oauthCacheState.pendingStates) {
     if (now > expiresAt) {
-      pendingOAuthStates.delete(token);
+      oauthCacheState.pendingStates.delete(token);
     }
   }
 }
 
 export function resetOAuthClientCache() {
-  cachedClient = null;
-  cachedTokensHash = null;
+  oauthCacheState.client = null;
+  oauthCacheState.tokensHash = null;
+}
+
+export async function resetOAuthClientCacheAsync() {
+  return mutex.runExclusive('oauth:cache', async () => {
+    resetOAuthClientCache();
+  });
 }
 
 export function generateOAuthState() {
   const now = Date.now();
   pruneExpiredOAuthStates(now);
-  while (pendingOAuthStates.size >= MAX_PENDING_OAUTH_STATES) {
-    const oldestKey = pendingOAuthStates.keys().next().value;
+  while (oauthCacheState.pendingStates.size >= MAX_PENDING_OAUTH_STATES) {
+    const oldestKey = oauthCacheState.pendingStates.keys().next().value;
     if (!oldestKey) break;
-    pendingOAuthStates.delete(oldestKey);
+    oauthCacheState.pendingStates.delete(oldestKey);
   }
   const state = crypto.randomBytes(32).toString('hex');
-  pendingOAuthStates.set(state, now + OAUTH_STATE_TTL_MS);
+  oauthCacheState.pendingStates.set(state, now + OAUTH_STATE_TTL_MS);
   return state;
+}
+
+export async function generateOAuthStateAsync() {
+  return mutex.runExclusive('oauth:cache', async () => generateOAuthState());
+}
+
+export async function getOAuthClient() {
+  return mutex.runExclusive('oauth:cache', async () => oauthCacheState.client);
+}
+
+export async function getPendingOAuthStates() {
+  return mutex.runExclusive('oauth:cache', async () => {
+    pruneExpiredOAuthStates();
+    return new Map(oauthCacheState.pendingStates);
+  });
 }
 
 export function hasPendingOAuthState() {
   pruneExpiredOAuthStates();
-  return pendingOAuthStates.size > 0;
+  return oauthCacheState.pendingStates.size > 0;
 }
 
 export function verifyOAuthState(candidateState) {
   pruneExpiredOAuthStates();
-  if (pendingOAuthStates.size === 0) {
+  if (oauthCacheState.pendingStates.size === 0) {
     return false;
   }
   const candidate = String(candidateState || '');
   let matchedKey = null;
-  for (const state of pendingOAuthStates.keys()) {
+  for (const state of oauthCacheState.pendingStates.keys()) {
     if (isTimingSafeMatch(candidate, state)) {
       matchedKey = state;
     }
   }
   if (matchedKey) {
-    pendingOAuthStates.delete(matchedKey);
+    oauthCacheState.pendingStates.delete(matchedKey);
     return true;
   }
   return false;
@@ -104,8 +127,10 @@ export async function handleOAuthCallback(code) {
     console.warn('[OAuth] Could not fetch user email:', err.message);
   }
 
-  saveCredentials('google_oauth', tokens, userEmail);
-  resetOAuthClientCache();
+  await mutex.runExclusive('oauth_token_refresh', async () => {
+    saveCredentials('google_oauth', tokens, userEmail);
+    resetOAuthClientCache();
+  });
   return { tokens, email: userEmail };
 }
 
@@ -118,13 +143,13 @@ export async function getAuthenticatedClient() {
   // Token hash to detect database updates
   const tokenJson = JSON.stringify(creds.tokens);
 
-  if (cachedClient && cachedTokensHash === tokenJson) {
+  if (oauthCacheState.client && oauthCacheState.tokensHash === tokenJson) {
     // Check if token expires within 60 seconds
     const expiry = creds.tokens.expiry_date;
     const isExpiringSoon = expiry && (expiry <= Date.now() + 60000);
 
     if (!isExpiringSoon) {
-      return cachedClient;
+      return oauthCacheState.client;
     }
   }
 
@@ -135,6 +160,13 @@ export async function getAuthenticatedClient() {
       throw new Error('Google Drive is not authenticated.');
     }
 
+    const freshTokenJson = JSON.stringify(freshCreds.tokens);
+    const expiry = freshCreds.tokens.expiry_date;
+    const isExpiringSoon = expiry && (expiry <= Date.now() + 60000);
+    if (oauthCacheState.client && oauthCacheState.tokensHash === freshTokenJson && !isExpiringSoon) {
+      return oauthCacheState.client;
+    }
+
     const client = createOAuth2Client();
     client.setCredentials(freshCreds.tokens);
 
@@ -142,26 +174,25 @@ export async function getAuthenticatedClient() {
     client.on('tokens', (newTokens) => {
       const merged = { ...freshCreds.tokens, ...newTokens };
       saveCredentials('google_oauth', merged, freshCreds.email);
-      cachedTokensHash = JSON.stringify(merged);
+      oauthCacheState.tokensHash = JSON.stringify(merged);
     });
 
     // Proactively refresh if expired or about to expire
-    const expiry = freshCreds.tokens.expiry_date;
-    if (freshCreds.tokens.refresh_token && expiry && (expiry <= Date.now() + 60000)) {
+    if (freshCreds.tokens.refresh_token && isExpiringSoon) {
       try {
         const { credentials } = await client.refreshAccessToken();
         const merged = { ...freshCreds.tokens, ...credentials };
         saveCredentials('google_oauth', merged, freshCreds.email);
         client.setCredentials(merged);
-        cachedTokensHash = JSON.stringify(merged);
+        oauthCacheState.tokensHash = JSON.stringify(merged);
       } catch (refreshErr) {
         console.warn('[OAuth] Proactive token refresh failed, continuing with current tokens:', refreshErr.message);
       }
     } else {
-      cachedTokensHash = JSON.stringify(freshCreds.tokens);
+      oauthCacheState.tokensHash = freshTokenJson;
     }
 
-    cachedClient = client;
+    oauthCacheState.client = client;
     return client;
   });
 }

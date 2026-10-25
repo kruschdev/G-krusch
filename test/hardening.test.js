@@ -50,8 +50,15 @@ import {
   securityHeadersMiddleware,
   createRateLimiter
 } from '../src/lib/auth-guard.js';
-import { generateOAuthState, verifyOAuthState, hasPendingOAuthState } from '../src/lib/oauth.js';
-import { encrypt, decrypt } from '../src/lib/crypto.js';
+import {
+  generateOAuthState,
+  generateOAuthStateAsync,
+  getPendingOAuthStates,
+  resetOAuthClientCacheAsync,
+  verifyOAuthState,
+  hasPendingOAuthState
+} from '../src/lib/oauth.js';
+import { encrypt, decrypt, getDerivedKey, resetCryptoKeyCache } from '../src/lib/crypto.js';
 import { escapeHtml } from '../src/routes/auth.js';
 import { config } from '../src/config.js';
 
@@ -355,7 +362,9 @@ test('Hardening: CORS origin lockdown and API key middleware (INV-03)', () => {
 
   // Verify requireAuthIfConfigured blocks unauthenticated requests when API_KEY is set
   const prevKey = process.env.API_KEY;
-  process.env.API_KEY = 'test-sovereign-key';
+  // Ephemeral random mock key for unit testing only (never a committed secret)
+  const mockKey = crypto.randomBytes(16).toString('hex');
+  process.env.API_KEY = mockKey;
   try {
     let statusSent = null;
     let nextCalled = false;
@@ -370,7 +379,7 @@ test('Hardening: CORS origin lockdown and API key middleware (INV-03)', () => {
 
     statusSent = null;
     requireAuthIfConfigured(
-      { headers: { authorization: 'Bearer test-sovereign-key' }, query: {} },
+      { headers: { authorization: `Bearer ${mockKey}` }, query: {} },
       mockRes,
       () => { nextCalled = true; }
     );
@@ -420,9 +429,7 @@ test('Hardening: AES-256-GCM 12-byte NIST IV and legacy 16-byte IV decryption co
   assert.equal(decrypt(encrypted), payload);
 
   // Verify legacy 16-byte IV ciphertexts still decrypt seamlessly
-  const key = crypto.createHash('sha256')
-    .update(process.env.ENCRYPTION_KEY || config.google.clientSecret || 'g-krusch-homelab-secure-fallback-key-2026')
-    .digest();
+  const key = getDerivedKey();
   const legacyIv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, legacyIv);
   let enc = cipher.update(payload, 'utf8', 'hex') + cipher.final('hex');
@@ -430,6 +437,29 @@ test('Hardening: AES-256-GCM 12-byte NIST IV and legacy 16-byte IV decryption co
   const legacyCiphertext = `${legacyIv.toString('hex')}:${legacyTag.toString('hex')}:${enc}`;
 
   assert.equal(decrypt(legacyCiphertext), payload, 'Legacy 16-byte IV ciphertexts must remain decryptable');
+
+  // PERF-01: Derived key is cached across operations when secret is unchanged
+  assert.equal(getDerivedKey(), key, 'getDerivedKey must return cached key Buffer when secret is unchanged');
+
+  // SEC-01: Missing encryption secret throws deterministic error
+  const prevEncKey = process.env.ENCRYPTION_KEY;
+  const prevGcrushSecret = process.env.GCRUSH_SECRET;
+  const prevClientSecret = config.google.clientSecret;
+  try {
+    delete process.env.ENCRYPTION_KEY;
+    delete process.env.GCRUSH_SECRET;
+    config.google.clientSecret = '';
+    resetCryptoKeyCache();
+    assert.throws(
+      () => encrypt('sensitive-token'),
+      /Encryption secret not configured/
+    );
+  } finally {
+    if (prevEncKey !== undefined) process.env.ENCRYPTION_KEY = prevEncKey;
+    if (prevGcrushSecret !== undefined) process.env.GCRUSH_SECRET = prevGcrushSecret;
+    config.google.clientSecret = prevClientSecret;
+    resetCryptoKeyCache();
+  }
 });
 
 test('Hardening: Atomic transactional RAG indexing and hybrid retrieval (INV-06)', async () => {
@@ -669,7 +699,30 @@ test('Hardening: Transactional RAG/FTS5 purge on file deletion and readDriveFile
   // GKR-11: client/main.js recognizes native-js PDF engine as online
   const clientSrc = await fsp.readFile(path.join(config.rootDir, 'client/main.js'), 'utf-8');
   assert.ok(clientSrc.includes("hData.pdf.engine === 'native-js'"), 'Client must recognize native-js PDF engine as online (GKR-11)');
+
+  // BUG-01: Concurrent OAuth state generation via mutex produces unique states without loss
+  await resetOAuthClientCacheAsync();
+  const concurrentStates = await Promise.all(
+    Array.from({ length: 16 }, () => generateOAuthStateAsync())
+  );
+  const uniqueStates = new Set(concurrentStates);
+  assert.equal(uniqueStates.size, 16, 'All concurrently generated OAuth states must be unique');
+  const pendingMap = await getPendingOAuthStates();
+  for (const st of concurrentStates) {
+    assert.equal(pendingMap.has(st), true, 'Each generated state must be retained in pendingOAuthStates');
+    assert.equal(verifyOAuthState(st), true, 'Each generated state must verify once');
+  }
+
+  // Pass #6 BUG-01 & BUG-02: Centralize nodeEnv and testDbPath in config without direct process.env reads in auth.js or db.js
+  assert.equal(typeof config.nodeEnv, 'string');
+  const authRouteSrc = await fsp.readFile(path.join(config.rootDir, 'src/routes/auth.js'), 'utf-8');
+  const dbLibSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/db.js'), 'utf-8');
+  assert.equal(authRouteSrc.includes('process.env.'), false, 'src/routes/auth.js must use injected config instead of process.env');
+  assert.ok(authRouteSrc.includes("config.nodeEnv === 'production'"), 'src/routes/auth.js must check config.nodeEnv');
+  assert.equal(dbLibSrc.includes('process.env.'), false, 'src/lib/db.js must use injected config instead of process.env');
+  assert.ok(dbLibSrc.includes('!config.testDbPath'), 'src/lib/db.js must check !config.testDbPath');
 });
+
 
 
 

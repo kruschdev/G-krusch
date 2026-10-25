@@ -8,9 +8,10 @@ import {
   verifyOAuthState
 } from '../lib/oauth.js';
 import { getAgentSteering, invalidateSteeringCache } from '../lib/steering.js';
+import { ensureSkylightCalendars } from '../lib/extensions.js';
 import { clearWorkspaceSessionState } from '../lib/db.js';
 import { requireAuthIfConfigured } from '../lib/auth-guard.js';
-import config from '../config.js';
+import config, { validateCallbackUrls } from '../config.js';
 
 const router = Router();
 
@@ -42,20 +43,22 @@ export async function oauthCallbackHandler(req, res) {
   }
 
   // Enforce CSRF state check on all OAuth callbacks (closing missing-state CSRF gap)
-  if ((hasPendingOAuthState() || state !== undefined || !config.isTestRuntime || process.env.NODE_ENV === 'production' || !state) && !verifyOAuthState(String(state || ''))) {
+  if ((hasPendingOAuthState() || state !== undefined || !config.isTestRuntime || config.nodeEnv === 'production' || !state) && !verifyOAuthState(String(state || ''))) {
     return res.status(403).send('<h3>OAuth Security Error</h3><p>Invalid or expired OAuth state parameter.</p>');
   }
 
   try {
+    const { baseUrl: hubUrl, companionUrl } = validateCallbackUrls(config);
     const result = await handleOAuthCallback(String(code));
-    // Immediately provision or pull agent.md from Google Drive on successful OAuth connect
+    // Immediately provision or pull agent.md from Google Drive + ensure dedicated Skylight calendars
     getAgentSteering({ forceRefresh: true }).catch((err) => {
       console.warn('[OAuth] Initial agent.md provisioning deferred:', err.message);
     });
+    ensureSkylightCalendars().catch((err) => {
+      console.warn('[OAuth] Skylight secondary calendar provisioning deferred:', err.message);
+    });
 
     const safeEmail = escapeHtml(result.email);
-    const hubUrl = config.baseUrl || 'http://localhost:5446';
-    const companionUrl = process.env.KRUSCH_COMPANION_URL || 'http://localhost:3004';
     res.send(`
       <!DOCTYPE html>
       <html>

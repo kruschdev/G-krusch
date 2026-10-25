@@ -18,12 +18,29 @@ const resolvedDbPath = isTestRuntime
   ? path.resolve(process.env.GCRUSH_TEST_DB_PATH || path.join(os.tmpdir(), `gcrush-test-${process.pid}.db`))
   : path.resolve(rootDir, process.env.DATABASE_PATH || './data/gcrush.db');
 
+export function validateCallbackUrls(cfg = config) {
+  const baseUrl = String(cfg?.baseUrl || '').trim();
+  const companionUrl = String(cfg?.companionUrl || '').trim();
+  if (!baseUrl) {
+    throw new Error('Missing required configuration: BASE_URL (config.baseUrl)');
+  }
+  if (!companionUrl) {
+    throw new Error('Missing required configuration: KRUSCH_COMPANION_URL (config.companionUrl)');
+  }
+  return { baseUrl, companionUrl };
+}
+
 export const config = {
   host: process.env.HOST || '127.0.0.1',
   port: parseInt(process.env.PORT || '5446', 10),
   baseUrl: process.env.BASE_URL || `http://localhost:${process.env.PORT || '5446'}`,
+  companionUrl: process.env.KRUSCH_COMPANION_URL || (isTestRuntime ? 'http://localhost:3004' : 'http://127.0.0.1:3004'),
   rootDir,
+  nodeEnv: process.env.NODE_ENV || 'development',
   isTestRuntime,
+  testDbPath: process.env.GCRUSH_TEST_DB_PATH || null,
+  // SEC-01: Disables noisy route error logging during node:test runs when true
+  nodeTestContext: Boolean(process.env.NODE_TEST_CONTEXT),
   dataDir: isTestRuntime ? path.dirname(resolvedDbPath) : path.join(rootDir, 'data'),
   dbPath: resolvedDbPath,
   google: {
@@ -34,6 +51,7 @@ export const config = {
       'https://www.googleapis.com/auth/drive',
       'https://www.googleapis.com/auth/drive.file',
       'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/calendar',
       'https://www.googleapis.com/auth/calendar.events',
       'https://www.googleapis.com/auth/calendar.readonly',
       'https://www.googleapis.com/auth/gmail.readonly',
@@ -48,7 +66,7 @@ export const config = {
   ai: {
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434/api/embeddings',
-    ollamaModel: process.env.OLLAMA_MODEL || 'bge-large:latest'
+    ollamaModel: process.env.OLLAMA_MODEL || 'snowflake-arctic-embed2:latest'
   }
 };
 

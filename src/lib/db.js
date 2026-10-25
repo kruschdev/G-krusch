@@ -81,7 +81,7 @@ export function getDb() {
 
   ensureFtsSync(db);
 
-  if (config.isTestRuntime && !process.env.GCRUSH_TEST_DB_PATH) {
+  if (config.isTestRuntime && !config.testDbPath) {
     process.once('exit', () => {
       try { db.close(); } catch {}
       for (const suffix of ['', '-wal', '-shm']) {
@@ -280,4 +280,24 @@ export function purgeIndexedDocumentTransactional(fileId) {
   });
   return tx();
 }
+
+/**
+ * Returns aggregated RAG index statistics and steering cache metadata for health/status routes.
+ */
+export function getRagIndexStats() {
+  const db = getDb();
+  const isDbOk = !!db.prepare('SELECT 1').get();
+  const docCount = db.prepare('SELECT COUNT(*) as count FROM rag_documents').get()?.count || 0;
+  const chunkCount = db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get()?.count || 0;
+  const lastDoc = db.prepare('SELECT MAX(synced_at) as last_sync FROM rag_documents').get();
+  const cachedSteering = db.prepare('SELECT version_hash, drive_file_id, cached_at FROM agent_steering_cache WHERE id = 1').get();
+  return {
+    isDbOk,
+    documentsIndexed: docCount,
+    totalChunks: chunkCount,
+    lastSync: lastDoc?.last_sync || null,
+    cachedSteering: cachedSteering || null
+  };
+}
+
 
