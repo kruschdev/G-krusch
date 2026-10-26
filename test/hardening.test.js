@@ -14,9 +14,11 @@ import {
 } from '../src/lib/path-utils.js';
 import { isBinaryMimeType, isFileInWorkspace } from '../src/lib/drive.js';
 import {
+  formatEmbeddingPayloadText,
   generateEmbedding,
   cosineSimilarity,
   saveIndexedDocumentTransactional,
+  scoreDriveChunkCrossEncoder,
   searchDriveRag
 } from '../src/lib/rag.js';
 import {
@@ -723,6 +725,108 @@ test('Hardening: Transactional RAG/FTS5 purge on file deletion and readDriveFile
   assert.ok(dbLibSrc.includes('!config.testDbPath'), 'src/lib/db.js must check !config.testDbPath');
 });
 
+test('Hardening: Asymmetric query embedding prefixes and Two-Stage Top-128 Cross-Encoder Reranking (arXiv:2610.30755)', async () => {
+  // 1. Asymmetric query vs document formatting across fleet model families
+  assert.equal(
+    formatEmbeddingPayloadText('clause 14_b termination notice', 'snowflake-arctic-embed2:latest', 'query'),
+    'query: clause 14_b termination notice'
+  );
+  assert.equal(
+    formatEmbeddingPayloadText('clause 14_b termination notice', 'snowflake-arctic-embed2:latest', 'document'),
+    'clause 14_b termination notice'
+  );
+  assert.equal(
+    formatEmbeddingPayloadText('indemnity cap', 'bge-large:latest', 'query'),
+    'Represent this sentence for searching relevant passages: indemnity cap'
+  );
+  assert.equal(
+    formatEmbeddingPayloadText('indemnity cap', 'nomic-embed-text:latest', 'query'),
+    'search_query: indemnity cap'
+  );
+  assert.ok(
+    formatEmbeddingPayloadText('indemnity cap', 'qwen3-embedding:0.6b', 'query').startsWith('Instruct: ')
+  );
 
+  // 2. Verify live Ollama /api/embed receives prefixed query payload while document payload stays raw
+  const prevFetch = globalThis.fetch;
+  const prevLiveFlag = process.env.GCRUSH_TEST_LIVE_EMBEDDINGS;
+  const prevModel = config.ai.ollamaModel;
+  const prevUrl = config.ai.ollamaUrl;
+  const capturedPayloads = [];
 
+  try {
+    process.env.GCRUSH_TEST_LIVE_EMBEDDINGS = 'true';
+    config.ai.ollamaModel = 'snowflake-arctic-embed2:latest';
+    config.ai.ollamaUrl = 'http://127.0.0.1:11434/api/embed';
+    globalThis.fetch = async (_url, opts) => {
+      const parsed = JSON.parse(opts.body);
+      capturedPayloads.push(parsed);
+      const val = parsed.input.startsWith('query: ') ? 0.75 : 0.25;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ embeddings: [new Array(1024).fill(val)] })
+      };
+    };
 
+    const uniqueProbe = `arctic_probe_${Date.now()}`;
+    const qVec = await generateEmbedding(uniqueProbe, { mode: 'query' });
+    const dVec = await generateEmbedding(uniqueProbe, { mode: 'document' });
+
+    assert.equal(capturedPayloads.length, 2, 'Query and document modes must not collide in SQLite embedding cache');
+    assert.equal(capturedPayloads[0].input, `query: ${uniqueProbe}`);
+    assert.equal(capturedPayloads[1].input, uniqueProbe);
+    assert.equal(qVec.length, 1024);
+    assert.equal(dVec.length, 1024);
+    assert.notEqual(qVec[0], dVec[0], 'Query and document cache entries must stay isolated');
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevLiveFlag === undefined) delete process.env.GCRUSH_TEST_LIVE_EMBEDDINGS;
+    else process.env.GCRUSH_TEST_LIVE_EMBEDDINGS = prevLiveFlag;
+    config.ai.ollamaModel = prevModel;
+    config.ai.ollamaUrl = prevUrl;
+  }
+
+  // 3. Verify Two-Stage Top-128 Cross-Encoder Reranking rescues exact phrase + ID needle over keyword-stuffed distractors
+  const db = getDb();
+  db.prepare('DELETE FROM rag_chunks').run();
+  db.prepare('DELETE FROM rag_chunks_fts').run();
+  db.prepare('DELETE FROM rag_documents').run();
+
+  for (let i = 0; i < 12; i++) {
+    const distractorText = `General termination overview termination policy written summary notice schedule notice workflow days calendar days review batch_${i}.`;
+    const distractorEmb = await generateEmbedding(distractorText, { mode: 'document' });
+    saveIndexedDocumentTransactional({
+      fileId: `doc_distractor_${i}`,
+      name: `policies/general-notes-${i}.md`,
+      mimeType: 'text/markdown',
+      modifiedTime: '2026-10-26T10:00:00Z',
+      embeddedChunks: [{ chunk: distractorText, embedding: distractorEmb }]
+    });
+  }
+
+  const needleText = 'Master Services Agreement Addendum: clause_14b requires ninety days written termination notice prior to renewal.';
+  const needleEmb = await generateEmbedding(needleText, { mode: 'document' });
+  saveIndexedDocumentTransactional({
+    fileId: 'doc_raw_rag_needle',
+    name: 'contracts/msa-2026.md',
+    mimeType: 'text/markdown',
+    webViewLink: 'https://drive.google.com/file/d/doc_raw_rag_needle/view',
+    modifiedTime: '2026-10-26T10:05:00Z',
+    embeddedChunks: [{ chunk: needleText, embedding: needleEmb }]
+  });
+
+  const targetQuery = 'clause_14b ninety days written termination notice';
+  const unreranked = await searchDriveRag(targetQuery, { limit: 5, rerank: false });
+  const reranked = await searchDriveRag(targetQuery, { limit: 5, candidatePoolSize: 128, rerank: true });
+
+  assert.ok(unreranked.length > 0 && reranked.length > 0);
+  assert.equal(reranked[0].fileId, 'doc_raw_rag_needle', 'Stage-2 cross-encoder reranker must promote exact phrase + identifier needle to #1');
+  assert.ok(
+    scoreDriveChunkCrossEncoder(targetQuery, needleText, 'contracts/msa-2026.md', 0.4) >
+    scoreDriveChunkCrossEncoder(targetQuery, 'termination notice days overview', 'policies/general.md', 0.55),
+    'Cross-encoder scorer must rank ordered phrase + identifier match above higher-first-stage partial distractor'
+  );
+  assert.equal(typeof reranked[0].rerankScore, 'number');
+  assert.equal(typeof reranked[0].firstStageScore, 'number');
+});

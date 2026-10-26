@@ -58,7 +58,7 @@ export function registerMcpTools(mcpServer) {
     'Perform semantic vector and keyword search across all indexed files in the Google Drive workspace.',
     {
       query: z.string().describe('Search query or question to retrieve context for'),
-      limit: z.number().int().min(1).max(20).default(5).describe('Maximum number of matching chunks to return')
+      limit: z.number().int().min(1).max(30).default(5).describe('Maximum number of matching chunks to return (two-stage Top-128 reranked)')
     },
     {
       readOnlyHint: true,

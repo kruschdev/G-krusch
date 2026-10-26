@@ -115,15 +115,65 @@ function resolveOllamaLegacyEmbedUrl(rawUrl) {
   return trimmed;
 }
 
+const CROSS_ENCODER_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'what', 'when', 'where',
+  'which', 'who', 'whom', 'whose', 'why', 'how', 'are', 'was', 'were', 'been',
+  'being', 'have', 'has', 'had', 'having', 'does', 'did', 'doing', 'will',
+  'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must', 'into',
+  'onto', 'upon', 'about', 'above', 'below', 'under', 'over', 'again', 'further',
+  'then', 'once', 'here', 'there', 'all', 'any', 'both', 'each', 'few', 'more',
+  'most', 'other', 'some', 'such', 'only', 'own', 'same', 'than', 'too', 'very',
+  'just', 'but', 'not', 'nor', 'our', 'your', 'their', 'his', 'her', 'its'
+]);
+
+/**
+ * Formats input text with asymmetric query or document prefixes per model family,
+ * matching @krusch/toolkit/embeddings without adding cross-repo runtime dependencies.
+ */
+export function formatEmbeddingPayloadText(cleanText, modelName = 'snowflake-arctic-embed2:latest', mode = 'document', options = {}) {
+  const raw = cleanText == null ? '' : String(cleanText);
+  if (!raw) return '';
+
+  const normalizedModel = String(modelName || 'snowflake-arctic-embed2:latest')
+    .trim()
+    .toLowerCase()
+    .replace(/^models\//, '')
+    .replace(/:latest$/, '');
+
+  if (mode !== 'query') {
+    if (normalizedModel.startsWith('nomic-embed-text') && options?.prefixDocuments === true) {
+      return `search_document: ${raw}`;
+    }
+    return raw;
+  }
+
+  if (normalizedModel.startsWith('snowflake-arctic-embed2') || normalizedModel.includes('arctic-embed2')) {
+    return `query: ${raw}`;
+  }
+  if (normalizedModel.startsWith('bge-') || normalizedModel.includes('/bge-')) {
+    return `Represent this sentence for searching relevant passages: ${raw}`;
+  }
+  if (normalizedModel.startsWith('nomic-embed-text')) {
+    return `search_query: ${raw}`;
+  }
+  if (normalizedModel.startsWith('qwen3-embedding')) {
+    const task = typeof options?.instruction === 'string' && options.instruction.trim()
+      ? options.instruction.trim()
+      : 'Given a search query, retrieve relevant passages that answer the query';
+    return `Instruct: ${task}\nQuery:${raw}`;
+  }
+  return raw;
+}
+
 /**
  * Generate vector embedding for a string with SQLite caching.
- * Prioritizes local GPU Ollama (bge-large:latest, 1024-dim) via /api/embed with legacy 404 retry,
- * isolates vector spaces so incompatible models never collide or cross-contaminate, and prevents
- * 64-dim offline fallback vectors from poisoning the persistent SQLite cache on transient errors.
+ * Prioritizes local GPU Ollama (snowflake-arctic-embed2:latest, 1024-dim) via /api/embed with legacy 404 retry,
+ * formats asymmetric query prefixes in query mode, isolates vector spaces so incompatible models never collide,
+ * and prevents 64-dim offline fallback vectors from poisoning the persistent SQLite cache on transient errors.
  */
 export async function generateEmbedding(text, options = {}) {
   const mode = options?.mode || 'document';
-  const clean = text.replace(/\n+/g, ' ').slice(0, 2048);
+  const clean = String(text ?? '').replace(/\n+/g, ' ').slice(0, 2048);
   const useLiveProviders = !config.isTestRuntime || process.env.GCRUSH_TEST_LIVE_EMBEDDINGS === 'true';
 
   const ollamaModel = config.ai.ollamaModel || 'snowflake-arctic-embed2:latest';
@@ -157,21 +207,22 @@ export async function generateEmbedding(text, options = {}) {
   let fromLiveProvider = false;
   let resolvedProvider = null;
 
-  // 1. Try Sovereign Local GPU Ollama (bge-large:latest, 1024-dim) first via /api/embed
+  // 1. Try Sovereign Local GPU Ollama (snowflake-arctic-embed2:latest, 1024-dim) first via /api/embed
   if (useLiveProviders && config.ai.ollamaUrl) {
     try {
       const embedUrl = resolveOllamaEmbedUrl(config.ai.ollamaUrl);
+      const ollamaPayloadText = formatEmbeddingPayloadText(clean, ollamaModel, mode, options);
       let res = await fetch(embedUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
-          model: config.ai.ollamaModel,
-          input: clean,
-          prompt: clean,
+          model: ollamaModel,
+          input: ollamaPayloadText,
+          prompt: ollamaPayloadText,
           truncate: true,
           keep_alive: -1,
-          ...(String(config.ai.ollamaModel || '').startsWith('qwen3-embedding') ? { dimensions: 1024 } : {})
+          ...(String(ollamaModel).startsWith('qwen3-embedding') ? { dimensions: 1024 } : {})
         })
       });
 
@@ -182,8 +233,8 @@ export async function generateEmbedding(text, options = {}) {
           headers: { 'Content-Type': 'application/json' },
           signal: AbortSignal.timeout(5000),
           body: JSON.stringify({
-            model: config.ai.ollamaModel,
-            prompt: clean,
+            model: ollamaModel,
+            prompt: ollamaPayloadText,
             truncate: true,
             keep_alive: -1
           })
@@ -482,12 +533,74 @@ export async function indexSingleFile(file, relativePath) {
 }
 
 /**
- * True Hybrid Search: Combines Dense Vector Similarity + SQLite FTS5 BM25 Keyword Search.
- * Ensures keyword matches always provide an additive boost.
+ * Deterministic Stage-2 cross-encoder relevance scorer for Drive chunks (arXiv:2610.30755 Table 34).
+ * Combines content-word & identifier/number recall, stopword-filtered ordered bigram overlap,
+ * multi-token exact phrase containment, and Stage-1 hybrid similarity.
  */
-export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {}) {
+export function scoreDriveChunkCrossEncoder(query, content, fileName = '', firstStageScore = 0) {
+  const qTokens = (String(query || '').toLowerCase().match(/[a-z0-9_]+/g) || [])
+    .filter(tok => (tok.length >= 2 || /\d/.test(tok)) && !CROSS_ENCODER_STOPWORDS.has(tok));
+  const clampedFirstStage = Math.max(0, Math.min(1, Number(firstStageScore) || 0));
+
+  if (qTokens.length === 0) {
+    return clampedFirstStage;
+  }
+
+  const docLower = `${String(fileName || '')} ${String(content || '')}`.toLowerCase();
+  const docTokenList = docLower.match(/[a-z0-9_]+/g) || [];
+  const docTokenSet = new Set(docTokenList);
+
+  let weightedHits = 0;
+  let totalWeight = 0;
+  for (const tok of qTokens) {
+    const isAnchor = /\d|_/.test(tok) || tok.length >= 7;
+    const weight = isAnchor ? 1.8 : 1.0;
+    totalWeight += weight;
+    if (docTokenSet.has(tok)) {
+      weightedHits += weight;
+    }
+  }
+  const lexicalRecall = totalWeight > 0 ? weightedHits / totalWeight : 0;
+
+  let bigramHits = 0;
+  const totalBigrams = Math.max(0, qTokens.length - 1);
+  if (totalBigrams > 0) {
+    const docBigrams = new Set();
+    const contentTokens = docTokenList.filter(tok => !CROSS_ENCODER_STOPWORDS.has(tok));
+    for (let i = 0; i + 1 < contentTokens.length; i++) {
+      docBigrams.add(`${contentTokens[i]}_${contentTokens[i + 1]}`);
+    }
+    for (let i = 0; i < totalBigrams; i++) {
+      if (docBigrams.has(`${qTokens[i]}_${qTokens[i + 1]}`)) {
+        bigramHits += 1;
+      }
+    }
+  }
+  const bigramScore = totalBigrams > 0 ? bigramHits / totalBigrams : 0;
+
+  const normalizedDocWords = docTokenList.filter(tok => !CROSS_ENCODER_STOPWORDS.has(tok)).join(' ');
+  const exactPhraseBonus = (qTokens.length >= 2 && normalizedDocWords.includes(qTokens.join(' '))) ? 1 : 0;
+
+  const combined = (0.45 * lexicalRecall)
+    + (0.20 * bigramScore)
+    + (0.10 * exactPhraseBonus)
+    + (0.25 * clampedFirstStage);
+  return Number(Math.max(0, Math.min(1, combined)).toFixed(6));
+}
+
+/**
+ * Two-Stage Hybrid Search (arXiv:2610.30755 Table 34):
+ * Stage 1: Asymmetric Query Dense Vector Similarity + SQLite FTS5 BM25 Keyword Pool (Top-128).
+ * Stage 2: Deterministic Cross-Encoder Reranking before slicing to final top-k limit.
+ */
+export async function searchDriveRag(
+  query,
+  { limit = 5, minScore = 0.15, candidatePoolSize = 128, rerank = true } = {}
+) {
   const db = getDb();
-  const queryEmbedding = await generateEmbedding(query);
+  const safeLimit = Math.max(1, Number(limit) || 5);
+  const safePoolSize = Math.max(safeLimit, Number(candidatePoolSize) || 128);
+  const queryEmbedding = await generateEmbedding(query, { mode: 'query' });
 
   // 1. Vector similarity search across all chunks
   const chunks = db.prepare(`
@@ -513,6 +626,7 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {})
       vectorScore: vScore,
       bm25Score: 0,
       combinedScore: 0,
+      rerankScore: 0,
       content: row.content,
       fileId: row.file_id,
       fileName: row.name,
@@ -522,8 +636,9 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {})
     });
   }
 
-  // 2. FTS5 BM25 keyword matching
-  const ftsHits = searchFtsChunks(query, limit * 3);
+  // 2. Wide FTS5 BM25 keyword matching across the Top-128 pool
+  const ftsLimit = Math.max(safeLimit * 4, safePoolSize);
+  const ftsHits = searchFtsChunks(query, ftsLimit);
   for (const hit of ftsHits) {
     const key = `${hit.file_id}:${hit.chunk_index}`;
     // BM25 rank is negative in SQLite, lower is better. Normalize to 0-1 scale
@@ -535,7 +650,7 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {})
     }
   }
 
-  // 3. Compute uniform additive hybrid fusion: 70% vector + 30% BM25 keyword,
+  // 3. Stage-1 uniform additive hybrid fusion: 70% vector + 30% BM25 keyword,
   // with a BM25 floor so exact FTS5 keyword hits are never dropped if embeddings are offline or mixed-dimension.
   for (const item of chunkMap.values()) {
     const weightedScore = (0.7 * Math.max(0, item.vectorScore)) + (0.3 * item.bm25Score);
@@ -543,22 +658,43 @@ export async function searchDriveRag(query, { limit = 5, minScore = 0.15 } = {})
     item.combinedScore = Math.max(weightedScore, bm25Floor);
   }
 
-  const results = Array.from(chunkMap.values())
+  const candidatePool = Array.from(chunkMap.values())
     .filter(item => item.combinedScore >= minScore)
     .sort((a, b) => b.combinedScore - a.combinedScore)
-    .slice(0, limit)
-    .map(item => ({
-      score: Math.round(item.combinedScore * 1000) / 1000,
-      vectorScore: Math.round(item.vectorScore * 1000) / 1000,
-      bm25Score: Math.round(item.bm25Score * 1000) / 1000,
-      content: item.content,
-      fileId: item.fileId,
-      fileName: item.fileName,
-      mimeType: item.mimeType,
-      chunkIndex: item.chunkIndex,
-      webViewLink: item.webViewLink
-    }));
+    .slice(0, safePoolSize);
+
+  // 4. Stage-2 Cross-Encoder Reranking over the Top-128 candidate pool
+  for (const item of candidatePool) {
+    item.rerankScore = rerank === false
+      ? item.combinedScore
+      : scoreDriveChunkCrossEncoder(query, item.content, item.fileName, item.combinedScore);
+  }
+
+  if (rerank !== false) {
+    candidatePool.sort((a, b) => {
+      if (b.rerankScore !== a.rerankScore) return b.rerankScore - a.rerankScore;
+      return b.combinedScore - a.combinedScore;
+    });
+  }
+
+  const results = candidatePool
+    .slice(0, safeLimit)
+    .map(item => {
+      const displayScore = rerank === false ? item.combinedScore : item.rerankScore;
+      return {
+        score: Math.round(displayScore * 1000) / 1000,
+        rerankScore: Math.round(item.rerankScore * 1000) / 1000,
+        firstStageScore: Math.round(item.combinedScore * 1000) / 1000,
+        vectorScore: Math.round(item.vectorScore * 1000) / 1000,
+        bm25Score: Math.round(item.bm25Score * 1000) / 1000,
+        content: item.content,
+        fileId: item.fileId,
+        fileName: item.fileName,
+        mimeType: item.mimeType,
+        chunkIndex: item.chunkIndex,
+        webViewLink: item.webViewLink
+      };
+    });
 
   return results;
 }
-

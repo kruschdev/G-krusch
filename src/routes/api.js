@@ -308,7 +308,7 @@ router.get('/rag/search', requireAuthIfConfigured, async (req, res) => {
     if (!rawQuery.trim()) {
       return res.status(400).json({ error: 'Query parameter q is required.' });
     }
-    const limit = Math.min(Math.max(1, parseInt(req.query.limit || '5', 10)), 25);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit || '5', 10)), 30);
     const results = await searchDriveRag(rawQuery, { limit });
     res.json({ query: rawQuery, results });
   } catch (err) {
