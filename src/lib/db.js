@@ -4,20 +4,81 @@ import path from 'path';
 import config from '../config.js';
 import { encrypt, decrypt } from './crypto.js';
 
+const toolkitDbUrl = new URL('../../../../lib/db.js', import.meta.url);
+
+let toolkitInitDb = null;
+let toolkitCloseDb = null;
+
+try {
+  if (fs.existsSync(toolkitDbUrl)) {
+    const toolkitDbMod = await import(toolkitDbUrl.href);
+    if (typeof toolkitDbMod.initDb === 'function') {
+      toolkitInitDb = toolkitDbMod.initDb;
+    }
+    if (typeof toolkitDbMod.closeDb === 'function') {
+      toolkitCloseDb = toolkitDbMod.closeDb;
+    }
+  }
+} catch {
+  // Fall through to package specifier if sibling lib/ lacks dependencies
+}
+if (!toolkitInitDb) {
+  try {
+    const pkgDbMod = await import('@krusch/toolkit/db');
+    if (typeof pkgDbMod.initDb === 'function') {
+      toolkitInitDb = pkgDbMod.initDb;
+    }
+    if (typeof pkgDbMod.closeDb === 'function') {
+      toolkitCloseDb = pkgDbMod.closeDb;
+    }
+  } catch {
+    // Standalone CI fallback when @krusch/toolkit/db is unavailable
+  }
+}
+
+function openToolkitDb(dbPath, options = {}) {
+  if (toolkitInitDb) {
+    return toolkitInitDb(dbPath, options);
+  }
+  const SqliteDriver = options._DatabaseClass || Database;
+  const db = new SqliteDriver(dbPath);
+  try {
+    if (options.busyTimeout) {
+      db.pragma(`busy_timeout = ${Number(options.busyTimeout)}`);
+    }
+    if (options.wal !== false) {
+      db.pragma('journal_mode = WAL');
+      db.pragma('synchronous = NORMAL');
+      db.pragma('wal_autocheckpoint = 1000');
+    }
+    db.pragma('foreign_keys = ON');
+  } catch (err) {
+    try { db.close(); } catch {}
+    throw err;
+  }
+  return db;
+}
+
+function closeToolkitDb() {
+  if (toolkitCloseDb) {
+    try { toolkitCloseDb(); } catch {}
+  }
+}
+
 let dbInstance = null;
 
 export function getDb() {
-  if (dbInstance) return dbInstance;
+  if (dbInstance && dbInstance.open !== false) return dbInstance;
+  if (dbInstance && dbInstance.open === false) {
+    dbInstance = null;
+    closeToolkitDb();
+  }
 
   if (!fs.existsSync(config.dataDir)) {
     fs.mkdirSync(config.dataDir, { recursive: true });
   }
 
-  const db = new Database(config.dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('busy_timeout = 5000');
-  db.pragma('foreign_keys = ON');
+  const db = openToolkitDb(config.dbPath, { wal: true, busyTimeout: 5000, _DatabaseClass: Database });
 
   // Initialize schema
   db.exec(`
@@ -83,6 +144,7 @@ export function getDb() {
 
   if (config.isTestRuntime && !config.testDbPath) {
     process.once('exit', () => {
+      try { closeToolkitDb(); } catch {}
       try { db.close(); } catch {}
       for (const suffix of ['', '-wal', '-shm']) {
         try { fs.rmSync(`${config.dbPath}${suffix}`, { force: true }); } catch {}

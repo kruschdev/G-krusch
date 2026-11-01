@@ -10,6 +10,7 @@
 
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -25,6 +26,98 @@ import {
   createRateLimiter
 } from './lib/auth-guard.js';
 import { createMcpServer } from './mcp/tools.js';
+
+const toolkitStreamingUrl = new URL('../../../lib/streaming.js', import.meta.url);
+
+function createStandaloneSseStream(res, req, options = {}) {
+  const heartbeatMs = options.heartbeatMs ?? 15000;
+  if (!res.headersSent) {
+    res.setHeader('X-Accel-Buffering', 'no');
+  }
+
+  let closed = Boolean(res.writableEnded || res.destroyed || req?.aborted);
+  let cleaned = false;
+  let heartbeat = null;
+
+  const stopHeartbeat = () => {
+    closed = true;
+    if (cleaned) return;
+    cleaned = true;
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    req?.off?.('close', onReqClose);
+    res?.off?.('close', onResClose);
+  };
+
+  const onReqClose = () => {
+    if (req?.complete === true && res?.socket && !res.socket.destroyed && !res.destroyed) {
+      return;
+    }
+    stopHeartbeat();
+  };
+
+  const onResClose = () => {
+    stopHeartbeat();
+  };
+
+  const close = () => {
+    stopHeartbeat();
+    if (!res.writableEnded && !res.destroyed) {
+      try { res.end(); } catch {}
+    }
+  };
+
+  if (!closed) {
+    req?.on?.('close', onReqClose);
+    res?.on?.('close', onResClose);
+
+    if (heartbeatMs > 0) {
+      heartbeat = setInterval(() => {
+        if (closed || res.writableEnded || res.destroyed) {
+          stopHeartbeat();
+          return;
+        }
+        if (res.headersSent) {
+          try {
+            res.write(': ping\n\n');
+          } catch {
+            stopHeartbeat();
+          }
+        }
+      }, heartbeatMs);
+      heartbeat.unref?.();
+    }
+  }
+
+  return {
+    isClosed: () => closed,
+    close
+  };
+}
+
+let sseResponse = createStandaloneSseStream;
+try {
+  if (fs.existsSync(toolkitStreamingUrl)) {
+    const streamingMod = await import(toolkitStreamingUrl.href);
+    if (typeof streamingMod.sseResponse === 'function') {
+      sseResponse = streamingMod.sseResponse;
+    }
+  }
+} catch {
+  // Fall through to package specifier if sibling lib/ lacks dependencies
+}
+if (sseResponse === createStandaloneSseStream) {
+  try {
+    const pkgStreamingMod = await import('@krusch/toolkit/streaming');
+    if (typeof pkgStreamingMod.sseResponse === 'function') {
+      sseResponse = pkgStreamingMod.sseResponse;
+    }
+  } catch {
+    // Standalone CI fallback when @krusch/toolkit/streaming is unavailable
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,44 +152,31 @@ if (isStdio) {
 
   // ── MCP SSE Transport with Heartbeat Guard ─────────────────────
 
-  /** @type {Map<string, { transport: SSEServerTransport, res: express.Response, server: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer }>} */
+  /** @type {Map<string, { transport: SSEServerTransport, res: express.Response, server: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer, sseStream: { close: () => void, isClosed?: () => boolean } }>} */
   const transports = new Map();
   const MAX_CONCURRENT_TRANSPORTS = 50;
 
-  // 15-second heartbeat ping to prevent proxy/firewall disconnects
-  const heartbeatTimer = setInterval(() => {
+  app.get('/mcp/sse', apiLimiter, requireAuthIfConfigured, async (req, res) => {
     for (const [id, entry] of transports) {
-      try {
-        if (!entry.res.writableEnded) {
-          entry.res.write(':keepalive\n\n');
-        } else {
-          try { entry.server?.close?.(); } catch (err) { console.error('SSE cleanup error (inner):', err); }
-          transports.delete(id);
-        }
-      } catch (outerErr) {
-        console.error('SSE heartbeat write error:', outerErr);
-        try { entry.server?.close?.(); } catch (err) { console.error('SSE cleanup error (outer):', err); }
+      if (entry.res.writableEnded || entry.res.destroyed || entry.sseStream?.isClosed?.()) {
+        try { entry.sseStream?.close?.(); } catch {}
+        try { entry.server?.close?.(); } catch {}
         transports.delete(id);
       }
     }
-  }, 15000);
 
-  app.get('/mcp/sse', apiLimiter, requireAuthIfConfigured, async (req, res) => {
     if (transports.size >= MAX_CONCURRENT_TRANSPORTS) {
       return res.status(429).json({ error: 'Max concurrent MCP SSE connections reached.' });
     }
 
-    // Set reverse proxy headers for streaming
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
+    const sseStream = sseResponse(res, req, { deferHeaders: true, retryMs: 0, heartbeatMs: 15000, corsOrigin: false, tool: 'g-krusch.mcp_sse' });
 
     const sessionServer = createMcpServer();
     const transport = new SSEServerTransport('/mcp/messages', res);
-    transports.set(transport.sessionId, { transport, res, server: sessionServer });
+    transports.set(transport.sessionId, { transport, res, server: sessionServer, sseStream });
 
     res.on('close', () => {
+      try { sseStream.close(); } catch {}
       try { sessionServer.close?.(); } catch (err) { console.error('SSE session close error:', err); }
       transports.delete(transport.sessionId);
     });
@@ -105,6 +185,10 @@ if (isStdio) {
       await sessionServer.connect(transport);
     } catch (err) {
       console.warn('[MCP SSE Connect Error]:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to establish MCP SSE session' });
+      }
+      try { sseStream.close(); } catch {}
       try { sessionServer.close?.(); } catch {}
       transports.delete(transport.sessionId);
     }
@@ -171,9 +255,9 @@ if (isStdio) {
   // Graceful shutdown
   const gracefulShutdown = (signal) => {
     console.log(`\n[G-Krusch] Received ${signal}, closing server...`);
-    clearInterval(heartbeatTimer);
 
     for (const [id, entry] of transports) {
+      try { entry.sseStream?.close?.(); } catch {}
       try { entry.server?.close?.(); } catch {}
       try { entry.transport.close?.(); } catch {}
       transports.delete(id);

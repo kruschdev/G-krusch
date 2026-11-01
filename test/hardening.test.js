@@ -354,9 +354,9 @@ test('Hardening: CORS origin lockdown and API key middleware (INV-03)', () => {
   // Localhost, LAN, and Tailscale origins
   assert.equal(isAllowedOrigin('http://localhost:5446'), true);
   assert.equal(isAllowedOrigin('http://127.0.0.1:3004'), true);
-  assert.equal(isAllowedOrigin('http://192.168.1.13:3004'), true);
-  assert.equal(isAllowedOrigin('http://100.65.159.15:5446'), true);
-  assert.equal(isAllowedOrigin('https://krusch.tailnet.ts.net'), true);
+  assert.equal(isAllowedOrigin('http://172.16.1.2:3004'), true);
+  assert.equal(isAllowedOrigin('http://100.64.1.2:5446'), true);
+  assert.equal(isAllowedOrigin('https://demo-node.tailnet.ts.net'), true);
 
   // Untrusted external origins must be blocked
   assert.equal(isAllowedOrigin('https://evil-attacker.example.com'), false);
@@ -512,12 +512,12 @@ test('Hardening: HTTP Security Headers and Sliding-Window Rate Limiter (INV-11)'
     json() { return this; }
   };
 
-  limiter({ ip: '10.0.0.99' }, mockRes, () => {});
-  limiter({ ip: '10.0.0.99' }, mockRes, () => {});
+  limiter({ ip: '198.51.100.99' }, mockRes, () => {});
+  limiter({ ip: '198.51.100.99' }, mockRes, () => {});
   assert.equal(statusSent, null);
 
   // 3rd request within window must trigger 429
-  limiter({ ip: '10.0.0.99' }, mockRes, () => {});
+  limiter({ ip: '198.51.100.99' }, mockRes, () => {});
   assert.equal(statusSent, 429);
   assert.ok(Number(headers['Retry-After']) >= 1);
 });
@@ -829,4 +829,90 @@ test('Hardening: Asymmetric query embedding prefixes and Two-Stage Top-128 Cross
   );
   assert.equal(typeof reranked[0].rerankScore, 'number');
   assert.equal(typeof reranked[0].firstStageScore, 'number');
+});
+
+test('Hardening: Toolkit Lego adoption for MCP SSE streaming and SQLite singleton (INV-LEGO-27)', async () => {
+  const forbiddenPrefix = ['', 'home', 'krusch'].join('/');
+  const indexSrc = await fsp.readFile(path.join(config.rootDir, 'src/index.js'), 'utf-8');
+  const dbSrc = await fsp.readFile(path.join(config.rootDir, 'src/lib/db.js'), 'utf-8');
+
+  assert.ok(!indexSrc.includes(forbiddenPrefix), 'src/index.js must not contain hardcoded host path');
+  assert.ok(!dbSrc.includes(forbiddenPrefix), 'src/lib/db.js must not contain hardcoded host path');
+
+  // Verify src/index.js uses sseResponse with deferHeaders: true and @krusch/toolkit/streaming
+  assert.ok(indexSrc.includes('@krusch/toolkit/streaming'), 'src/index.js must reference @krusch/toolkit/streaming');
+  assert.ok(indexSrc.includes('sseResponse(res, req, { deferHeaders: true'), 'src/index.js must call sseResponse with deferHeaders: true');
+  assert.ok(indexSrc.includes('sseStream.close()'), 'src/index.js must close sseStream on disconnect/error');
+  assert.equal(indexSrc.includes(['text', 'event-stream'].join('/')), false, 'src/index.js must not contain manual SSE Content-Type plumbing');
+
+  // Verify src/lib/db.js uses @krusch/toolkit/db and openToolkitDb
+  assert.ok(dbSrc.includes('@krusch/toolkit/db'), 'src/lib/db.js must reference @krusch/toolkit/db');
+  assert.ok(dbSrc.includes('openToolkitDb(config.dbPath, { wal: true, busyTimeout: 5000, _DatabaseClass: Database })'), 'src/lib/db.js must open SQLite via openToolkitDb with _DatabaseClass: Database');
+  assert.ok(dbSrc.includes('closeToolkitDb()'), 'src/lib/db.js must reset toolkit singleton on test exit');
+  assert.equal(dbSrc.includes(['new Database', '('].join('')), false, 'src/lib/db.js must not contain raw new Database() boilerplate');
+
+  // Verify SQLite pragmas applied via toolkit / fallback driver
+  const db = getDb();
+  assert.equal(db.pragma('busy_timeout')[0]?.timeout, 5000);
+  assert.equal(db.pragma('foreign_keys')[0]?.foreign_keys, 1);
+  assert.equal(String(db.pragma('journal_mode')[0]?.journal_mode).toLowerCase(), 'wal');
+
+  // Verify runtime compatibility: sseResponse({ deferHeaders: true }) keeps res.headersSent === false
+  // right before await sessionServer.connect(transport) calls SSEServerTransport.start() -> res.writeHead(200)
+  const toolkitStreamingUrl = new URL('../../../lib/streaming.js', import.meta.url);
+  if (fs.existsSync(toolkitStreamingUrl)) {
+    const { EventEmitter } = await import('node:events');
+    const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
+    const { sseResponse } = await import(toolkitStreamingUrl.href);
+
+    const mockReq = new EventEmitter();
+    const mockHeaders = {};
+    const mockChunks = [];
+    const mockRes = Object.assign(new EventEmitter(), {
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false,
+      statusCode: 200,
+      setHeader(k, v) { mockHeaders[k.toLowerCase()] = v; },
+      getHeader(k) { return mockHeaders[k.toLowerCase()]; },
+      writeHead(code, hdrs = {}) {
+        if (this.headersSent) throw new Error('ERR_HTTP_HEADERS_SENT');
+        this.statusCode = code;
+        for (const [k, v] of Object.entries(hdrs)) mockHeaders[k.toLowerCase()] = v;
+        this.headersSent = true;
+        return this;
+      },
+      write(chunk) {
+        this.headersSent = true;
+        mockChunks.push(String(chunk));
+        return true;
+      },
+      end() {
+        this.writableEnded = true;
+        this.emit('close');
+      }
+    });
+
+    const sseStream = sseResponse(mockRes, mockReq, {
+      deferHeaders: true,
+      retryMs: 0,
+      heartbeatMs: 15000,
+      corsOrigin: false,
+      tool: 'g-krusch.mcp_sse'
+    });
+    assert.equal(mockRes.headersSent, false, 'res.headersSent must remain false before sessionServer.connect(transport)');
+    assert.equal(mockHeaders['x-accel-buffering'], 'no');
+
+    const transport = new SSEServerTransport('/mcp/messages', mockRes);
+    const sessionServer = createMcpServer();
+    await sessionServer.connect(transport);
+
+    assert.equal(mockRes.headersSent, true, 'SSEServerTransport.start() must flush headers during connect()');
+    assert.equal(mockRes.statusCode, 200);
+    assert.ok(mockChunks.some(c => c.includes('/mcp/messages?sessionId=')), 'SSE endpoint event must be emitted');
+
+    sseStream.close();
+    await sessionServer.close();
+    assert.equal(sseStream.isClosed(), true);
+  }
 });
