@@ -71,7 +71,63 @@ export function createCorsOptions() {
   };
 }
 
+/**
+ * Validates HTTP Host header to block browser DNS-rebinding attacks against loopback/LAN services.
+ * @param {string | undefined} hostHeader
+ * @returns {boolean}
+ */
+export function isAllowedHostHeader(hostHeader) {
+  if (!hostHeader || typeof hostHeader !== 'string') {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(`http://${hostHeader.trim()}`);
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+      return true;
+    }
+
+    if (
+      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host) ||
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(host) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host) ||
+      host.endsWith('.ts.net') ||
+      host.endsWith('.local')
+    ) {
+      return true;
+    }
+
+    const configuredOrigins = (process.env.CORS_ORIGINS || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    for (const entry of configuredOrigins) {
+      if (entry === '*') return true;
+      try {
+        if (new URL(entry).hostname.toLowerCase() === host) {
+          return true;
+        }
+      } catch {
+        if (entry.toLowerCase() === host) return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 export function requireAuthIfConfigured(req, res, next) {
+  if (!isAllowedHostHeader(req?.headers?.host)) {
+    return res.status(403).json({
+      error: 'Forbidden: Untrusted Host header blocked by G-Krusch DNS-rebinding guard.'
+    });
+  }
+
   const secret = process.env.API_KEY || process.env.GCRUSH_SECRET;
 
   // If no secret configured, only allow loopback requests (127.0.0.1 / ::1)
@@ -109,9 +165,14 @@ export function requireAuthIfConfigured(req, res, next) {
 }
 
 /**
- * Sets standard HTTP security headers to prevent MIME sniffing, clickjacking, and referrer leakage.
+ * Sets standard HTTP security headers and blocks DNS-rebinding Host headers across all routes.
  */
-export function securityHeadersMiddleware(_req, res, next) {
+export function securityHeadersMiddleware(req, res, next) {
+  if (!isAllowedHostHeader(req?.headers?.host)) {
+    return res.status(403).json({
+      error: 'Forbidden: Untrusted Host header blocked by G-Krusch DNS-rebinding guard.'
+    });
+  }
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
