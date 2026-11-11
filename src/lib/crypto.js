@@ -4,6 +4,8 @@
  */
 
 import crypto from 'crypto';
+import dotenv from 'dotenv';
+import path from 'path';
 import config from '../config.js';
 
 const ALGORITHM = 'aes-256-gcm';
@@ -58,9 +60,18 @@ export function encrypt(text) {
   return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted}`;
 }
 
+function tryDecipherWithKey(key, iv, tag, cipherHex) {
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  decipher.setAuthTag(tag);
+  let decrypted = decipher.update(cipherHex, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
 /**
  * Decrypts an AES-256-GCM encrypted string.
- * Supports transparent fallback for legacy plaintext JSON and 12-byte or 16-byte IVs.
+ * Supports transparent fallback for legacy plaintext JSON, 12-byte or 16-byte IVs,
+ * and hot-reloading of .env secrets across long-running stdio MCP workers.
  */
 export function decrypt(encryptedText) {
   if (!encryptedText) return '';
@@ -83,12 +94,30 @@ export function decrypt(encryptedText) {
     throw new Error('Invalid AES-256-GCM IV or authentication tag length.');
   }
 
-  const key = getDerivedKey();
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
-  decipher.setAuthTag(tag);
+  const primaryKey = getDerivedKey();
+  try {
+    return tryDecipherWithKey(primaryKey, iv, tag, cipherHex);
+  } catch (primaryErr) {
+    // If a long-running stdio MCP worker started before .env was updated, reload .env and try candidate secrets
+    if (!config.isTestRuntime && config.rootDir) {
+      try {
+        dotenv.config({ path: path.join(config.rootDir, '.env'), override: true });
+        resetCryptoKeyCache();
+      } catch {}
+    }
+    const candidates = [
+      process.env.ENCRYPTION_KEY,
+      process.env.GCRUSH_SECRET,
+      config.google?.clientSecret
+    ].filter(s => s && String(s).trim());
 
-  let decrypted = decipher.update(cipherHex, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-
-  return decrypted;
+    for (const candidate of candidates) {
+      try {
+        const candidateKey = crypto.createHash('sha256').update(candidate).digest();
+        return tryDecipherWithKey(candidateKey, iv, tag, cipherHex);
+      } catch {}
+    }
+    throw primaryErr;
+  }
 }
+
