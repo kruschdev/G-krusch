@@ -36,7 +36,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -45,6 +45,9 @@
     "zod": "^4.6.7"
   },
   "overrides": {
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "fast-uri": "^4.2.3",
+    "hono": "^4.13.11",
+    "@hono/node-server": "^2.1.3"
   }
 }
