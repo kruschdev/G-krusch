@@ -8,6 +8,18 @@
     "g-krusch-doctor": "./bin/doctor.js"
   },
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "bin",
+    "src",
+    "client",
+    ".env.example",
+    "INSTALL.md",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
