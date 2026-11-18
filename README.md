@@ -59,6 +59,14 @@ Google Drive /
 
 ## ⚡ Quick Start & Diagnostics
 
+### Agent-Assisted Setup
+
+Ask your coding agent (Claude Code, Codex, Cursor, Windsurf, or Antigravity):
+
+```text
+Read https://raw.githubusercontent.com/kruschdev/G-krusch/main/INSTALL.md and set up G-krusch on this machine.
+```
+
 ### 1. Installation
 ```bash
 git clone https://github.com/kruschdev/G-krusch.git
