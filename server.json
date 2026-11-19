@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.krusch/g-krusch",
+  "title": "G-Krusch Workspace MCP",
+  "description": "Local-first Google Workspace MCP server with hybrid FTS5 Drive RAG, Docs, Calendar, and Gmail.",
+  "repository": {
+    "url": "https://github.com/kruschdev/G-krusch",
+    "source": "github"
+  },
+  "version": "1.0.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "g-krusch",
+      "version": "1.0.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
